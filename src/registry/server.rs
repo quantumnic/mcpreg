@@ -7,6 +7,13 @@ use tower_http::cors::CorsLayer;
 
 pub async fn run_server(bind_addr: &str, db_path: &str) -> crate::error::Result<()> {
     let db = Database::open(db_path)?;
+
+    match db.seed_default_servers() {
+        Ok(0) => tracing::debug!("database already populated, skipping seed"),
+        Ok(n) => tracing::info!("seeded {n} default MCP servers into registry"),
+        Err(e) => tracing::warn!("failed to seed default servers: {e}"),
+    }
+
     let db_state: DbState = Arc::new(Mutex::new(db));
 
     let app = build_router(db_state);

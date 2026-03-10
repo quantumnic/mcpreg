@@ -43,6 +43,18 @@ enum Commands {
         /// Server reference (owner/name)
         server: String,
     },
+    /// Browse all servers in the registry (paginated, with categories)
+    Browse {
+        /// Page number (default: 1)
+        #[arg(short, long, default_value = "1")]
+        page: usize,
+        /// Results per page (default: 20)
+        #[arg(short = 'n', long, default_value = "20")]
+        per_page: usize,
+        /// Filter by category (e.g. "database", "search", "browser")
+        #[arg(short, long)]
+        category: Option<String>,
+    },
     /// Update all installed MCP servers
     Update,
     /// Start the self-hosted registry server
@@ -68,6 +80,9 @@ async fn main() {
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
         Commands::List => commands::list::run(),
         Commands::Info { server } => commands::info::run(&server).await,
+        Commands::Browse { page, per_page, category } => {
+            commands::browse::run(page, per_page, category.as_deref())
+        }
         Commands::Update => run_update().await,
         Commands::Serve { bind, db } => {
             let db_path = match db {

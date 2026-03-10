@@ -209,6 +209,20 @@ impl Database {
         Ok((entries, total))
     }
 
+    /// Seed the database with well-known MCP servers if the DB is empty.
+    pub fn seed_default_servers(&self) -> Result<usize> {
+        let count: i64 = self.conn.query_row("SELECT COUNT(*) FROM servers", [], |row| row.get(0))?;
+        if count > 0 {
+            return Ok(0);
+        }
+        let servers = crate::registry::seed::default_servers();
+        let total = servers.len();
+        for entry in servers {
+            self.upsert_server(&entry)?;
+        }
+        Ok(total)
+    }
+
     #[allow(dead_code)]
     pub fn increment_downloads(&self, owner: &str, name: &str) -> Result<()> {
         self.conn.execute(
