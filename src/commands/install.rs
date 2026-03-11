@@ -103,11 +103,44 @@ fn update_claude_config(name: &str, command: &str, args: &[String]) -> Result<()
 }
 
 fn chrono_now() -> String {
-    // Simple ISO timestamp without chrono dependency
-    let duration = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}Z", duration.as_secs())
+    // Simple ISO-8601 timestamp without chrono dependency
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Convert unix seconds to UTC datetime components
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Simple days-to-date (good for 2000-2099)
+    let mut y = 1970i64;
+    let mut remaining = days as i64;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut m = 0usize;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining < md as i64 {
+            m = i;
+            break;
+        }
+        remaining -= md as i64;
+    }
+    let d = remaining + 1;
+
+    format!("{y:04}-{:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z", m + 1)
 }
 
 #[allow(dead_code)]
@@ -142,5 +175,30 @@ mod tests {
         let (owner, name) = parse_server_ref("org/sub/name").unwrap();
         assert_eq!(owner, "org");
         assert_eq!(name, "sub/name");
+    }
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+
+    #[test]
+    fn test_chrono_now_is_iso8601() {
+        let ts = chrono_now();
+        // Should match YYYY-MM-DDTHH:MM:SSZ pattern
+        assert!(ts.ends_with('Z'), "Timestamp should end with Z: {ts}");
+        assert_eq!(ts.len(), 20, "ISO8601 timestamp length: {ts}");
+        assert_eq!(&ts[4..5], "-");
+        assert_eq!(&ts[7..8], "-");
+        assert_eq!(&ts[10..11], "T");
+        assert_eq!(&ts[13..14], ":");
+        assert_eq!(&ts[16..17], ":");
+    }
+
+    #[test]
+    fn test_chrono_now_year_reasonable() {
+        let ts = chrono_now();
+        let year: u32 = ts[..4].parse().unwrap();
+        assert!(year >= 2024 && year <= 2100, "Year out of range: {year}");
     }
 }

@@ -13,6 +13,9 @@ pub type DbState = Arc<Mutex<Database>>;
 #[derive(Deserialize)]
 pub struct SearchQuery {
     pub q: Option<String>,
+    pub category: Option<String>,
+    pub sort: Option<String>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -27,7 +30,35 @@ pub async fn search(
 ) -> Result<Json<SearchResponse>, McpRegError> {
     let query = params.q.unwrap_or_default();
     let db = db.lock().await;
-    let servers = db.search(&query)?;
+    let mut servers = db.search(&query)?;
+
+    // Server-side category filter
+    if let Some(ref cat) = params.category {
+        let cat_lower = cat.to_lowercase();
+        servers.retain(|s| {
+            let server_cat = crate::registry::seed::server_category(&s.owner, &s.name).to_lowercase();
+            server_cat.contains(&cat_lower)
+        });
+    }
+
+    // Server-side sorting
+    if let Some(ref sort) = params.sort {
+        match sort.as_str() {
+            "name" => servers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+            "updated" => servers.sort_by(|a, b| {
+                let a_time = a.updated_at.as_deref().unwrap_or("");
+                let b_time = b.updated_at.as_deref().unwrap_or("");
+                b_time.cmp(a_time)
+            }),
+            _ => {} // "downloads" or default — already sorted
+        }
+    }
+
+    // Server-side limit
+    if let Some(n) = params.limit {
+        servers.truncate(n);
+    }
+
     let total = servers.len();
     Ok(Json(SearchResponse { servers, total }))
 }
@@ -71,6 +102,25 @@ pub async fn publish(
     }
     if entry.command.is_empty() {
         return Err(McpRegError::Validation("command is required".into()));
+    }
+    if entry.version.is_empty() {
+        return Err(McpRegError::Validation("version is required".into()));
+    }
+    // Basic semver check
+    let parts: Vec<&str> = entry.version.split('.').collect();
+    if parts.len() < 2 || parts.iter().any(|p| p.parse::<u64>().is_err()) {
+        return Err(McpRegError::Validation(
+            "version must be in semver format (e.g. 1.0.0)".into(),
+        ));
+    }
+    // Validate transport
+    let valid_transports = ["stdio", "sse", "streamable-http"];
+    if !entry.transport.is_empty() && !valid_transports.contains(&entry.transport.as_str()) {
+        return Err(McpRegError::Validation(format!(
+            "transport '{}' is not recognized (expected: {})",
+            entry.transport,
+            valid_transports.join(", ")
+        )));
     }
 
     let db = db.lock().await;

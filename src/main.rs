@@ -47,6 +47,12 @@ enum Commands {
         /// Maximum number of results to show
         #[arg(short = 'n', long)]
         limit: Option<usize>,
+        /// Compact one-line-per-result output
+        #[arg(long)]
+        compact: bool,
+        /// Search the local database instead of the remote registry
+        #[arg(long)]
+        offline: bool,
     },
     /// Install an MCP server and add it to claude_desktop_config.json
     Install {
@@ -92,6 +98,12 @@ enum Commands {
         /// Sort order: downloads (default), name, updated
         #[arg(short, long, value_enum, default_value_t = SortOrder::Downloads)]
         sort: SortOrder,
+    },
+    /// Export installed servers as a claude_desktop_config.json snippet
+    Export {
+        /// Output file path (prints to stdout if not given)
+        #[arg(short, long)]
+        output: Option<String>,
     },
     /// Update all installed MCP servers
     Update,
@@ -152,7 +164,9 @@ async fn main() {
             category,
             sort,
             limit,
-        } => commands::search::run(&query, json, category.as_deref(), &sort, limit).await,
+            compact,
+            offline,
+        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline).await,
         Commands::Install { server } => commands::install::run(&server).await,
         Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
@@ -164,6 +178,7 @@ async fn main() {
             category,
             sort,
         } => commands::browse::run(page, per_page, category.as_deref(), &sort),
+        Commands::Export { output } => commands::export::run(output.as_deref()),
         Commands::Update => run_update().await,
         Commands::Init { path } => commands::init::run(path.as_deref()),
         Commands::Validate { manifest, json } => {

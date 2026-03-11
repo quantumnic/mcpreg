@@ -8,13 +8,15 @@ Like npm or crates.io, but for MCP servers. Search, install, publish, and self-h
 
 ## Features
 
-- 🔍 **Search** — Find MCP servers by name, description, or capabilities
+- 🔍 **Search** — Find MCP servers by name, description, tools, or capabilities (with `--offline` mode)
 - 📦 **Install** — One command to install and configure MCP servers in `claude_desktop_config.json`
-- 📤 **Publish** — Share your MCP servers with the community
+- 📤 **Publish** — Share your MCP servers with the community (with version & transport validation)
 - 📋 **List** — See all installed MCP servers at a glance
-- ℹ️ **Info** — View detailed server metadata, tools, and resources
+- ℹ️ **Info** — View detailed server metadata, tools, resources, and prompts
 - 🔄 **Update** — Keep all installed servers up to date
+- 📤 **Export** — Export installed servers config as a portable JSON snippet
 - 🏠 **Self-host** — Run your own private registry with the built-in axum server
+- 🎯 **Prompts** — First-class support for MCP prompts in manifests, DB, and API
 
 ## Installation
 
@@ -40,6 +42,8 @@ cargo install mcpreg
 mcpreg search "filesystem"
 mcpreg search "sqlite"
 mcpreg search "web scraper"
+mcpreg search "database" --category database --compact
+mcpreg search "tools" --offline --sort name --limit 10
 ```
 
 ### Install a server

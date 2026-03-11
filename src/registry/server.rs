@@ -72,6 +72,7 @@ mod tests {
             transport: "stdio".into(),
             tools: vec!["read_file".into(), "write_file".into(), "list_directory".into()],
             resources: vec!["file://".into()],
+            prompts: vec![],
             downloads: 1500,
             created_at: None,
             updated_at: None,
@@ -210,6 +211,7 @@ mod tests {
             transport: "stdio".into(),
             tools: vec!["query".into()],
             resources: vec![],
+            prompts: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -241,6 +243,7 @@ mod tests {
             transport: "stdio".into(),
             tools: vec![],
             resources: vec![],
+            prompts: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -399,5 +402,228 @@ mod new_endpoint_tests {
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let paginated: crate::api::types::PaginatedResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(paginated.per_page, 100);
+    }
+}
+
+#[cfg(test)]
+mod improvement_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_search_with_sort_param() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=server&sort=name")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        // Verify sorted by name
+        if search.servers.len() >= 2 {
+            for i in 1..search.servers.len() {
+                assert!(
+                    search.servers[i - 1].name.to_lowercase() <= search.servers[i].name.to_lowercase(),
+                    "Expected name-sorted order"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_with_limit_param() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&limit=3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(search.servers.len(), 3);
+        assert_eq!(search.total, 3);
+    }
+
+    #[tokio::test]
+    async fn test_search_with_category_filter() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&category=database")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(search.total > 0);
+        for s in &search.servers {
+            let cat = crate::registry::seed::server_category(&s.owner, &s.name).to_lowercase();
+            assert!(cat.contains("database"), "Expected database category, got {cat}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_publish_bad_version() {
+        let app = seeded_app().await;
+        let entry = ServerEntry {
+            id: None,
+            owner: "test".into(),
+            name: "bad-version".into(),
+            version: "not-semver".into(),
+            description: "test".into(),
+            author: "test".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/publish")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&entry).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_publish_bad_transport() {
+        let app = seeded_app().await;
+        let entry = ServerEntry {
+            id: None,
+            owner: "test".into(),
+            name: "bad-transport".into(),
+            version: "1.0.0".into(),
+            description: "test".into(),
+            author: "test".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "websocket".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/publish")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&entry).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_publish_missing_version() {
+        let app = seeded_app().await;
+        let entry = ServerEntry {
+            id: None,
+            owner: "test".into(),
+            name: "no-version".into(),
+            version: String::new(),
+            description: "test".into(),
+            author: "test".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/publish")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&entry).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_publish_with_prompts() {
+        let app = seeded_app().await;
+        let entry = ServerEntry {
+            id: None,
+            owner: "dev".into(),
+            name: "prompt-server".into(),
+            version: "1.0.0".into(),
+            description: "Server with prompts".into(),
+            author: "dev".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec!["index.js".into()],
+            transport: "stdio".into(),
+            tools: vec!["tool1".into()],
+            resources: vec![],
+            prompts: vec!["summarize".into(), "analyze".into()],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/publish")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&entry).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_search_combined_sort_and_limit() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&sort=name&limit=5")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(search.servers.len(), 5);
+        // Verify sorted by name
+        for i in 1..search.servers.len() {
+            assert!(
+                search.servers[i - 1].name.to_lowercase() <= search.servers[i].name.to_lowercase(),
+            );
+        }
     }
 }

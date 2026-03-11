@@ -50,6 +50,12 @@ pub async fn run(server_ref: &str, json_output: bool) -> Result<()> {
             println!("  • {res}");
         }
     }
+    if !entry.prompts.is_empty() {
+        println!("\nPrompts ({}):", entry.prompts.len());
+        for prompt in &entry.prompts {
+            println!("  • {prompt}");
+        }
+    }
     if let Some(ref created) = entry.created_at {
         println!("\nCreated: {created}");
     }

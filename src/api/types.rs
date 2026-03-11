@@ -64,6 +64,8 @@ pub struct ServerEntry {
     pub transport: String,
     pub tools: Vec<String>,
     pub resources: Vec<String>,
+    #[serde(default)]
+    pub prompts: Vec<String>,
     pub downloads: i64,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -89,6 +91,7 @@ impl ServerEntry {
             transport: manifest.server.transport.clone(),
             tools: manifest.capabilities.tools.clone(),
             resources: manifest.capabilities.resources.clone(),
+            prompts: manifest.capabilities.prompts.clone(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -229,6 +232,7 @@ tools = ["tool1"]
             transport: "stdio".into(),
             tools: vec![],
             resources: vec![],
+            prompts: vec![],
             downloads: 42,
             created_at: None,
             updated_at: None,
@@ -268,5 +272,101 @@ DEBUG = "true"
         let manifest: McpManifest = toml::from_str(toml_str).unwrap();
         assert_eq!(manifest.server.env.len(), 2);
         assert_eq!(manifest.server.env.get("DEBUG").unwrap(), "true");
+    }
+}
+
+#[cfg(test)]
+mod prompts_tests {
+    use super::*;
+
+    #[test]
+    fn test_manifest_with_prompts() {
+        let toml_str = r#"
+[package]
+name = "prompt-server"
+version = "1.0.0"
+description = "Server with prompts"
+author = "dev"
+
+[server]
+command = "node"
+args = ["index.js"]
+
+[capabilities]
+tools = ["tool1"]
+resources = []
+prompts = ["summarize", "code-review", "translate"]
+"#;
+        let manifest: McpManifest = toml::from_str(toml_str).unwrap();
+        assert_eq!(manifest.capabilities.prompts.len(), 3);
+        assert_eq!(manifest.capabilities.prompts[0], "summarize");
+    }
+
+    #[test]
+    fn test_server_entry_from_manifest_includes_prompts() {
+        let toml_str = r#"
+[package]
+name = "prompt-test"
+version = "1.0.0"
+author = "dev"
+
+[server]
+command = "node"
+
+[capabilities]
+prompts = ["analyze", "summarize"]
+"#;
+        let manifest: McpManifest = toml::from_str(toml_str).unwrap();
+        let entry = ServerEntry::from_manifest("dev", &manifest);
+        assert_eq!(entry.prompts, vec!["analyze", "summarize"]);
+    }
+
+    #[test]
+    fn test_server_entry_json_roundtrip_with_prompts() {
+        let entry = ServerEntry {
+            id: Some(1),
+            owner: "test".into(),
+            name: "roundtrip".into(),
+            version: "1.0.0".into(),
+            description: "Test".into(),
+            author: "test".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec!["index.js".into()],
+            transport: "stdio".into(),
+            tools: vec!["tool1".into()],
+            resources: vec![],
+            prompts: vec!["prompt1".into(), "prompt2".into()],
+            downloads: 42,
+            created_at: Some("2024-01-01".into()),
+            updated_at: Some("2024-01-02".into()),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: ServerEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.prompts, vec!["prompt1", "prompt2"]);
+    }
+
+    #[test]
+    fn test_server_entry_json_missing_prompts_defaults_empty() {
+        // Old API responses without prompts field should deserialize fine
+        let json = r#"{
+            "id": 1,
+            "owner": "test",
+            "name": "old-format",
+            "version": "1.0.0",
+            "description": "",
+            "author": "",
+            "license": "",
+            "repository": "",
+            "command": "node",
+            "args": [],
+            "transport": "stdio",
+            "tools": [],
+            "resources": [],
+            "downloads": 0
+        }"#;
+        let entry: ServerEntry = serde_json::from_str(json).unwrap();
+        assert!(entry.prompts.is_empty(), "Missing prompts should default to empty");
     }
 }

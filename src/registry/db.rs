@@ -39,6 +39,7 @@ impl Database {
                 transport TEXT NOT NULL DEFAULT 'stdio',
                 tools TEXT NOT NULL DEFAULT '[]',
                 resources TEXT NOT NULL DEFAULT '[]',
+                prompts TEXT NOT NULL DEFAULT '[]',
                 category TEXT NOT NULL DEFAULT '',
                 downloads INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -75,6 +76,18 @@ impl Database {
             self.conn.execute_batch("ALTER TABLE servers ADD COLUMN category TEXT NOT NULL DEFAULT ''")?;
             self.conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_servers_category ON servers(category)")?;
         }
+
+        // Add prompts column if missing
+        let has_prompts: bool = self.conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name='prompts'")?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !has_prompts {
+            self.conn.execute_batch("ALTER TABLE servers ADD COLUMN prompts TEXT NOT NULL DEFAULT '[]'")?;
+        }
+
         Ok(())
     }
 
@@ -82,11 +95,12 @@ impl Database {
         let args_json = serde_json::to_string(&entry.args)?;
         let tools_json = serde_json::to_string(&entry.tools)?;
         let resources_json = serde_json::to_string(&entry.resources)?;
+        let prompts_json = serde_json::to_string(&entry.prompts)?;
         let category = crate::registry::seed::server_category(&entry.owner, &entry.name);
 
         self.conn.execute(
-            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources, category, downloads)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources, prompts, category, downloads)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(owner, name) DO UPDATE SET
                 version = excluded.version,
                 description = excluded.description,
@@ -98,6 +112,7 @@ impl Database {
                 transport = excluded.transport,
                 tools = excluded.tools,
                 resources = excluded.resources,
+                prompts = excluded.prompts,
                 category = excluded.category,
                 updated_at = datetime('now')",
             params![
@@ -113,6 +128,7 @@ impl Database {
                 entry.transport,
                 tools_json,
                 resources_json,
+                prompts_json,
                 category,
                 entry.downloads,
             ],
@@ -153,7 +169,7 @@ impl Database {
 
         let sql = format!(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, category, downloads, created_at, updated_at,
+                    command, args, transport, tools, resources, prompts, category, downloads, created_at, updated_at,
                     (CASE WHEN name LIKE ?{s} THEN 100 ELSE 0 END
                      + CASE WHEN owner LIKE ?{s} THEN 50 ELSE 0 END
                      + CASE WHEN tools LIKE ?{s} THEN 30 ELSE 0 END
@@ -187,7 +203,7 @@ impl Database {
         let pattern = format!("%{category}%");
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, category, downloads, created_at, updated_at
              FROM servers WHERE category LIKE ?1 ORDER BY downloads DESC",
         )?;
         let rows = stmt.query_map(params![pattern], row_mapper)?;
@@ -201,7 +217,7 @@ impl Database {
     pub fn get_server(&self, owner: &str, name: &str) -> Result<Option<ServerEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, category, downloads, created_at, updated_at
              FROM servers WHERE owner = ?1 AND name = ?2",
         )?;
         let mut rows = stmt.query_map(params![owner, name], row_mapper)?;
@@ -228,7 +244,7 @@ impl Database {
 
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, category, downloads, created_at, updated_at
              FROM servers ORDER BY downloads DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(params![per_page as i64, offset as i64], row_mapper)?;
@@ -306,10 +322,11 @@ fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<ServerEntryRow> {
         transport: row.get(10)?,
         tools: row.get::<_, String>(11)?,
         resources: row.get::<_, String>(12)?,
-        category: row.get(13)?,
-        downloads: row.get(14)?,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
+        prompts: row.get::<_, String>(13)?,
+        category: row.get(14)?,
+        downloads: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
     })
 }
 
@@ -327,6 +344,7 @@ struct ServerEntryRow {
     transport: String,
     tools: String,
     resources: String,
+    prompts: String,
     #[allow(dead_code)]
     category: String,
     downloads: i64,
@@ -350,6 +368,7 @@ impl ServerEntryRow {
             transport: self.transport,
             tools: serde_json::from_str(&self.tools).unwrap_or_default(),
             resources: serde_json::from_str(&self.resources).unwrap_or_default(),
+            prompts: serde_json::from_str(&self.prompts).unwrap_or_default(),
             downloads: self.downloads,
             created_at: Some(self.created_at),
             updated_at: Some(self.updated_at),
@@ -376,6 +395,7 @@ mod tests {
             transport: "stdio".into(),
             tools: vec!["read_file".into()],
             resources: vec!["file://".into()],
+            prompts: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -663,6 +683,7 @@ mod search_tests {
             transport: "stdio".into(),
             tools: tools.into_iter().map(String::from).collect(),
             resources: vec![],
+            prompts: vec![],
             downloads,
             created_at: None,
             updated_at: None,
@@ -737,5 +758,98 @@ mod search_tests {
         db.upsert_server(&make_entry("org", "filesystem", vec![], 0)).unwrap();
         let results = db.search("Files").unwrap();
         assert!(!results.is_empty(), "Category column should be searchable");
+    }
+}
+
+#[cfg(test)]
+mod prompts_tests {
+    use super::*;
+
+    #[test]
+    fn test_db_prompts_stored_and_retrieved() {
+        let db = Database::open_in_memory().unwrap();
+        let entry = ServerEntry {
+            id: None,
+            owner: "alice".into(),
+            name: "prompt-tool".into(),
+            version: "1.0.0".into(),
+            description: "Has prompts".into(),
+            author: "alice".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["tool1".into()],
+            resources: vec![],
+            prompts: vec!["summarize".into(), "analyze".into(), "translate".into()],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+        let retrieved = db.get_server("alice", "prompt-tool").unwrap().unwrap();
+        assert_eq!(retrieved.prompts, vec!["summarize", "analyze", "translate"]);
+    }
+
+    #[test]
+    fn test_db_prompts_default_empty() {
+        let db = Database::open_in_memory().unwrap();
+        let entry = ServerEntry {
+            id: None,
+            owner: "bob".into(),
+            name: "no-prompts".into(),
+            version: "1.0.0".into(),
+            description: "No prompts".into(),
+            author: "bob".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+        let retrieved = db.get_server("bob", "no-prompts").unwrap().unwrap();
+        assert!(retrieved.prompts.is_empty());
+    }
+
+    #[test]
+    fn test_db_prompts_upsert_preserves() {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = ServerEntry {
+            id: None,
+            owner: "carol".into(),
+            name: "evolving".into(),
+            version: "1.0.0".into(),
+            description: "First version".into(),
+            author: "carol".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec!["prompt1".into()],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+
+        // Update with new prompts
+        entry.version = "2.0.0".into();
+        entry.prompts = vec!["prompt1".into(), "prompt2".into(), "prompt3".into()];
+        db.upsert_server(&entry).unwrap();
+
+        let retrieved = db.get_server("carol", "evolving").unwrap().unwrap();
+        assert_eq!(retrieved.version, "2.0.0");
+        assert_eq!(retrieved.prompts.len(), 3);
     }
 }
