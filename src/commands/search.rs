@@ -1,14 +1,15 @@
 use crate::api::client::RegistryClient;
 use crate::config::Config;
 use crate::error::Result;
+use crate::SortOrder;
 
-pub async fn run(query: &str, json_output: bool, category: Option<&str>) -> Result<()> {
+pub async fn run(query: &str, json_output: bool, category: Option<&str>, sort: &SortOrder, limit: Option<usize>) -> Result<()> {
     let config = Config::load()?;
     let client = RegistryClient::new(&config);
     let response = client.search(query).await?;
 
     // Client-side category filter (server may not support it)
-    let servers: Vec<_> = if let Some(cat) = category {
+    let mut servers: Vec<_> = if let Some(cat) = category {
         let cat_lower = cat.to_lowercase();
         response
             .servers
@@ -21,6 +22,22 @@ pub async fn run(query: &str, json_output: bool, category: Option<&str>) -> Resu
     } else {
         response.servers
     };
+
+    // Client-side sorting
+    match sort {
+        SortOrder::Name => servers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        SortOrder::Updated => servers.sort_by(|a, b| {
+            let a_time = a.updated_at.as_deref().unwrap_or("");
+            let b_time = b.updated_at.as_deref().unwrap_or("");
+            b_time.cmp(a_time) // descending (most recent first)
+        }),
+        SortOrder::Downloads => {} // already sorted by server
+    }
+
+    // Apply limit
+    if let Some(n) = limit {
+        servers.truncate(n);
+    }
 
     if json_output {
         let resp = crate::api::types::SearchResponse {
@@ -41,11 +58,13 @@ pub async fn run(query: &str, json_output: bool, category: Option<&str>) -> Resu
 
     println!("Found {} server(s) matching '{query}':\n", servers.len());
     for server in &servers {
+        let cat = crate::registry::seed::server_category(&server.owner, &server.name);
         println!(
-            "  {} v{} — {}",
+            "  {} v{} — {}  [{}]",
             server.full_name(),
             server.version,
-            server.description
+            server.description,
+            cat,
         );
         if !server.tools.is_empty() {
             let tools_display: Vec<_> = server.tools.iter().take(5).cloned().collect();

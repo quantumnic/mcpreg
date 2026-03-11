@@ -1,4 +1,6 @@
 pub mod browse;
+pub mod config_cmd;
+pub mod doctor;
 pub mod info;
 pub mod init;
 pub mod install;

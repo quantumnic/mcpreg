@@ -27,7 +27,7 @@ impl RegistryClient {
     }
 
     pub async fn search(&self, query: &str) -> Result<SearchResponse> {
-        let url = format!("{}/api/v1/search?q={}", self.base_url, urlencod(query));
+        let url = format!("{}/api/v1/search?q={}", self.base_url, percent_encode(query));
         let resp = self.client.get(&url).send().await?;
         if !resp.status().is_success() {
             return Err(McpRegError::Registry(format!("Search failed: HTTP {}", resp.status())));
@@ -37,7 +37,12 @@ impl RegistryClient {
     }
 
     pub async fn get_server(&self, owner: &str, name: &str) -> Result<ServerEntry> {
-        let url = format!("{}/api/v1/servers/{}/{}", self.base_url, urlencod(owner), urlencod(name));
+        let url = format!(
+            "{}/api/v1/servers/{}/{}",
+            self.base_url,
+            percent_encode(owner),
+            percent_encode(name)
+        );
         let resp = self.client.get(&url).send().await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(McpRegError::NotFound(format!("{owner}/{name}")));
@@ -51,7 +56,7 @@ impl RegistryClient {
 
     pub async fn publish(&self, entry: &ServerEntry) -> Result<PublishResponse> {
         let api_key = self.api_key.as_ref().ok_or_else(|| {
-            McpRegError::Auth("API key required for publishing. Set it in ~/.mcpreg/config.toml".into())
+            McpRegError::Auth("API key required for publishing. Set it in ~/.mcpreg/config.toml or via 'mcpreg config set api_key <key>'".into())
         })?;
         let url = format!("{}/api/v1/publish", self.base_url);
         let resp = self.client
@@ -82,12 +87,20 @@ impl RegistryClient {
     }
 }
 
-fn urlencod(s: &str) -> String {
-    s.replace(' ', "%20")
-        .replace('/', "%2F")
-        .replace('?', "%3F")
-        .replace('&', "%26")
-        .replace('=', "%3D")
+/// Percent-encode a string for use in URLs (RFC 3986 unreserved chars only).
+fn percent_encode(input: &str) -> String {
+    let mut encoded = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    encoded
 }
 
 #[cfg(test)]
@@ -109,8 +122,31 @@ mod tests {
     }
 
     #[test]
-    fn test_url_encoding() {
-        assert_eq!(urlencod("hello world"), "hello%20world");
-        assert_eq!(urlencod("a/b"), "a%2Fb");
+    fn test_percent_encode_simple() {
+        assert_eq!(percent_encode("hello"), "hello");
+    }
+
+    #[test]
+    fn test_percent_encode_spaces() {
+        assert_eq!(percent_encode("hello world"), "hello%20world");
+    }
+
+    #[test]
+    fn test_percent_encode_special() {
+        assert_eq!(percent_encode("a/b"), "a%2Fb");
+        assert_eq!(percent_encode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(percent_encode("q?x"), "q%3Fx");
+    }
+
+    #[test]
+    fn test_percent_encode_unreserved() {
+        // These should NOT be encoded
+        assert_eq!(percent_encode("a-b_c.d~e"), "a-b_c.d~e");
+    }
+
+    #[test]
+    fn test_percent_encode_unicode() {
+        let encoded = percent_encode("über");
+        assert!(encoded.contains("%C3%BC")); // ü in UTF-8
     }
 }

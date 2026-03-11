@@ -11,6 +11,7 @@ impl Database {
         let conn = Connection::open(path)?;
         let db = Self { conn };
         db.init_tables()?;
+        db.migrate()?;
         Ok(db)
     }
 
@@ -38,6 +39,7 @@ impl Database {
                 transport TEXT NOT NULL DEFAULT 'stdio',
                 tools TEXT NOT NULL DEFAULT '[]',
                 resources TEXT NOT NULL DEFAULT '[]',
+                category TEXT NOT NULL DEFAULT '',
                 downloads INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -47,6 +49,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_servers_owner ON servers(owner);
             CREATE INDEX IF NOT EXISTS idx_servers_name ON servers(name);
             CREATE INDEX IF NOT EXISTS idx_servers_downloads ON servers(downloads DESC);
+            CREATE INDEX IF NOT EXISTS idx_servers_category ON servers(category);
 
             CREATE TABLE IF NOT EXISTS api_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,14 +62,31 @@ impl Database {
         Ok(())
     }
 
+    /// Run schema migrations for existing databases.
+    fn migrate(&self) -> Result<()> {
+        // Add category column if missing (for databases created before this version)
+        let has_category: bool = self.conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name='category'")?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !has_category {
+            self.conn.execute_batch("ALTER TABLE servers ADD COLUMN category TEXT NOT NULL DEFAULT ''")?;
+            self.conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_servers_category ON servers(category)")?;
+        }
+        Ok(())
+    }
+
     pub fn upsert_server(&self, entry: &ServerEntry) -> Result<i64> {
         let args_json = serde_json::to_string(&entry.args)?;
         let tools_json = serde_json::to_string(&entry.tools)?;
         let resources_json = serde_json::to_string(&entry.resources)?;
+        let category = crate::registry::seed::server_category(&entry.owner, &entry.name);
 
         self.conn.execute(
-            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources, downloads)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources, category, downloads)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(owner, name) DO UPDATE SET
                 version = excluded.version,
                 description = excluded.description,
@@ -78,6 +98,7 @@ impl Database {
                 transport = excluded.transport,
                 tools = excluded.tools,
                 resources = excluded.resources,
+                category = excluded.category,
                 updated_at = datetime('now')",
             params![
                 entry.owner,
@@ -92,6 +113,7 @@ impl Database {
                 entry.transport,
                 tools_json,
                 resources_json,
+                category,
                 entry.downloads,
             ],
         )?;
@@ -117,7 +139,7 @@ impl Database {
             let idx = param_values.len();
             param_values.push(pattern);
             conditions.push(format!(
-                "(name LIKE ?{p} OR description LIKE ?{p} OR owner LIKE ?{p} OR tools LIKE ?{p} OR author LIKE ?{p})",
+                "(name LIKE ?{p} OR description LIKE ?{p} OR owner LIKE ?{p} OR tools LIKE ?{p} OR author LIKE ?{p} OR category LIKE ?{p})",
                 p = idx + 1
             ));
         }
@@ -131,7 +153,7 @@ impl Database {
 
         let sql = format!(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, downloads, created_at, updated_at,
+                    command, args, transport, tools, resources, category, downloads, created_at, updated_at,
                     (CASE WHEN name LIKE ?{s} THEN 100 ELSE 0 END
                      + CASE WHEN owner LIKE ?{s} THEN 50 ELSE 0 END
                      + CASE WHEN tools LIKE ?{s} THEN 30 ELSE 0 END
@@ -149,26 +171,7 @@ impl Database {
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
 
-        let rows = stmt.query_map(params_refs.as_slice(), |row| {
-            Ok(ServerEntryRow {
-                id: row.get(0)?,
-                owner: row.get(1)?,
-                name: row.get(2)?,
-                version: row.get(3)?,
-                description: row.get(4)?,
-                author: row.get(5)?,
-                license: row.get(6)?,
-                repository: row.get(7)?,
-                command: row.get(8)?,
-                args: row.get::<_, String>(9)?,
-                transport: row.get(10)?,
-                tools: row.get::<_, String>(11)?,
-                resources: row.get::<_, String>(12)?,
-                downloads: row.get(13)?,
-                created_at: row.get(14)?,
-                updated_at: row.get(15)?,
-            })
-        })?;
+        let rows = stmt.query_map(params_refs.as_slice(), row_mapper)?;
 
         let mut entries = Vec::new();
         for row in rows {
@@ -178,32 +181,30 @@ impl Database {
         Ok(entries)
     }
 
+    /// Search servers filtered by category (server-side).
+    #[allow(dead_code)]
+    pub fn search_by_category(&self, category: &str) -> Result<Vec<ServerEntry>> {
+        let pattern = format!("%{category}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT id, owner, name, version, description, author, license, repository,
+                    command, args, transport, tools, resources, category, downloads, created_at, updated_at
+             FROM servers WHERE category LIKE ?1 ORDER BY downloads DESC",
+        )?;
+        let rows = stmt.query_map(params![pattern], row_mapper)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?.into_entry());
+        }
+        Ok(entries)
+    }
+
     pub fn get_server(&self, owner: &str, name: &str) -> Result<Option<ServerEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, category, downloads, created_at, updated_at
              FROM servers WHERE owner = ?1 AND name = ?2",
         )?;
-        let mut rows = stmt.query_map(params![owner, name], |row| {
-            Ok(ServerEntryRow {
-                id: row.get(0)?,
-                owner: row.get(1)?,
-                name: row.get(2)?,
-                version: row.get(3)?,
-                description: row.get(4)?,
-                author: row.get(5)?,
-                license: row.get(6)?,
-                repository: row.get(7)?,
-                command: row.get(8)?,
-                args: row.get::<_, String>(9)?,
-                transport: row.get(10)?,
-                tools: row.get::<_, String>(11)?,
-                resources: row.get::<_, String>(12)?,
-                downloads: row.get(13)?,
-                created_at: row.get(14)?,
-                updated_at: row.get(15)?,
-            })
-        })?;
+        let mut rows = stmt.query_map(params![owner, name], row_mapper)?;
 
         match rows.next() {
             Some(Ok(r)) => Ok(Some(r.into_entry())),
@@ -227,34 +228,14 @@ impl Database {
 
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, category, downloads, created_at, updated_at
              FROM servers ORDER BY downloads DESC LIMIT ?1 OFFSET ?2",
         )?;
-        let rows = stmt.query_map(params![per_page as i64, offset as i64], |row| {
-            Ok(ServerEntryRow {
-                id: row.get(0)?,
-                owner: row.get(1)?,
-                name: row.get(2)?,
-                version: row.get(3)?,
-                description: row.get(4)?,
-                author: row.get(5)?,
-                license: row.get(6)?,
-                repository: row.get(7)?,
-                command: row.get(8)?,
-                args: row.get::<_, String>(9)?,
-                transport: row.get(10)?,
-                tools: row.get::<_, String>(11)?,
-                resources: row.get::<_, String>(12)?,
-                downloads: row.get(13)?,
-                created_at: row.get(14)?,
-                updated_at: row.get(15)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![per_page as i64, offset as i64], row_mapper)?;
 
         let mut entries = Vec::new();
         for row in rows {
-            let r = row?;
-            entries.push(r.into_entry());
+            entries.push(row?.into_entry());
         }
         Ok((entries, total))
     }
@@ -291,6 +272,45 @@ impl Database {
         )?;
         Ok(count)
     }
+
+    /// List all distinct categories with counts.
+    #[allow(dead_code)]
+    pub fn list_categories(&self) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT category, COUNT(*) FROM servers WHERE category != '' GROUP BY category ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        })?;
+        let mut cats = Vec::new();
+        for row in rows {
+            cats.push(row?);
+        }
+        Ok(cats)
+    }
+}
+
+/// Row mapper for server queries (reused across methods).
+fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<ServerEntryRow> {
+    Ok(ServerEntryRow {
+        id: row.get(0)?,
+        owner: row.get(1)?,
+        name: row.get(2)?,
+        version: row.get(3)?,
+        description: row.get(4)?,
+        author: row.get(5)?,
+        license: row.get(6)?,
+        repository: row.get(7)?,
+        command: row.get(8)?,
+        args: row.get::<_, String>(9)?,
+        transport: row.get(10)?,
+        tools: row.get::<_, String>(11)?,
+        resources: row.get::<_, String>(12)?,
+        category: row.get(13)?,
+        downloads: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
+    })
 }
 
 struct ServerEntryRow {
@@ -307,6 +327,8 @@ struct ServerEntryRow {
     transport: String,
     tools: String,
     resources: String,
+    #[allow(dead_code)]
+    category: String,
     downloads: i64,
     created_at: String,
     updated_at: String,
@@ -400,12 +422,10 @@ mod tests {
         db.upsert_server(&test_entry("bob", "sqlite-server")).unwrap();
         db.upsert_server(&test_entry("carol", "web-scraper")).unwrap();
 
-        // Multi-word: both terms must match
         let results = db.search("alice filesystem").unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "filesystem");
 
-        // No results when terms don't co-occur
         let results = db.search("alice sqlite").unwrap();
         assert!(results.is_empty());
     }
@@ -495,6 +515,39 @@ mod tests {
         db.upsert_server(&test_entry("b", "s2")).unwrap();
         assert_eq!(db.count_by_transport("stdio").unwrap(), 2);
         assert_eq!(db.count_by_transport("sse").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_db_category_stored() {
+        let db = Database::open_in_memory().unwrap();
+        // "filesystem" maps to "📁 Files & VCS"
+        db.upsert_server(&test_entry("alice", "filesystem")).unwrap();
+        let cats = db.list_categories().unwrap();
+        assert!(!cats.is_empty());
+        assert!(cats.iter().any(|(c, _)| c.contains("Files")));
+    }
+
+    #[test]
+    fn test_db_search_by_category() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry("alice", "filesystem")).unwrap();
+        db.upsert_server(&test_entry("bob", "sqlite")).unwrap();
+
+        let results = db.search_by_category("Files").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "filesystem");
+
+        let results = db.search_by_category("Database").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "sqlite");
+    }
+
+    #[test]
+    fn test_db_list_categories() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let cats = db.list_categories().unwrap();
+        assert!(cats.len() >= 5, "Expected at least 5 categories, got {}", cats.len());
     }
 }
 
@@ -630,7 +683,6 @@ mod search_tests {
     #[test]
     fn test_search_weighted_ordering() {
         let db = Database::open_in_memory().unwrap();
-        // Name match should rank above description match
         db.upsert_server(&make_entry("org", "sqlite", vec![], 10)).unwrap();
         db.upsert_server(&{
             let mut e = make_entry("org", "data-tool", vec![], 10);
@@ -667,7 +719,6 @@ mod search_tests {
         db.upsert_server(&make_entry("b", "s2", vec![], 20)).unwrap();
         let results = db.search("").unwrap();
         assert_eq!(results.len(), 2);
-        // Should be ordered by downloads desc
         assert_eq!(results[0].name, "s2");
     }
 
@@ -677,5 +728,14 @@ mod search_tests {
         db.upsert_server(&make_entry("a", "s1", vec![], 0)).unwrap();
         let results = db.search("   ").unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_category_column() {
+        let db = Database::open_in_memory().unwrap();
+        // "filesystem" should get categorized as Files & VCS
+        db.upsert_server(&make_entry("org", "filesystem", vec![], 0)).unwrap();
+        let results = db.search("Files").unwrap();
+        assert!(!results.is_empty(), "Category column should be searchable");
     }
 }

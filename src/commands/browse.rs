@@ -2,9 +2,10 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::registry::db::Database;
 use crate::registry::seed::server_category;
+use crate::SortOrder;
 use std::collections::BTreeMap;
 
-pub fn run(page: usize, per_page: usize, category: Option<&str>) -> Result<()> {
+pub fn run(page: usize, per_page: usize, category: Option<&str>, sort: &SortOrder) -> Result<()> {
     let db_path = Config::db_path()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "registry.db".to_string());
@@ -18,11 +19,22 @@ pub fn run(page: usize, per_page: usize, category: Option<&str>) -> Result<()> {
         Err(e) => eprintln!("⚠  Could not seed defaults: {e}"),
     }
 
-    let (all_servers, total) = db.list_servers(1, 1000)?;
+    let (mut all_servers, total) = db.list_servers(1, 1000)?;
 
     if total == 0 {
         println!("No servers in registry.");
         return Ok(());
+    }
+
+    // Apply sort
+    match sort {
+        SortOrder::Name => all_servers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        SortOrder::Updated => all_servers.sort_by(|a, b| {
+            let a_time = a.updated_at.as_deref().unwrap_or("");
+            let b_time = b.updated_at.as_deref().unwrap_or("");
+            b_time.cmp(a_time)
+        }),
+        SortOrder::Downloads => {} // already sorted by downloads from DB
     }
 
     // Group by category
@@ -99,8 +111,6 @@ mod tests {
 
     #[test]
     fn test_browse_runs_without_error() {
-        // Just make sure it doesn't panic with a temporary DB
-        // (uses in-memory via seed)
-        let _ = run(1, 10, None);
+        let _ = run(1, 10, None, &SortOrder::Downloads);
     }
 }
