@@ -121,8 +121,11 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
-    /// Update all installed MCP servers
-    Update,
+    /// Update installed MCP servers (all or a specific one)
+    Update {
+        /// Optional server reference (owner/name) to update a single server
+        server: Option<String>,
+    },
     /// Initialize a new mcpreg.toml manifest for your MCP server project
     Init {
         /// Directory to create mcpreg.toml in (default: current directory)
@@ -181,6 +184,14 @@ enum Commands {
         /// Config value (for set)
         value: Option<String>,
     },
+    /// Find which servers provide a specific tool
+    Which {
+        /// Tool name to search for (e.g. "read_file")
+        tool: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Run diagnostics and check your setup
     Doctor,
     /// Start the self-hosted registry server
@@ -228,7 +239,7 @@ async fn main() {
         Commands::Export { output } => commands::export::run(output.as_deref()),
         Commands::Similar { server, limit, json } => commands::similar::run(&server, limit, json),
         Commands::Outdated { json } => commands::outdated::run(json),
-        Commands::Update => run_update().await,
+        Commands::Update { server } => run_update(server.as_deref()).await,
         Commands::Init { path } => commands::init::run(path.as_deref()),
         Commands::Validate { manifest, json } => {
             commands::validate::run(manifest.as_deref(), json)
@@ -240,6 +251,7 @@ async fn main() {
         Commands::Config { action, key, value } => {
             commands::config_cmd::run(&action, key.as_deref(), value.as_deref())
         }
+        Commands::Which { tool, json } => commands::which::run(&tool, json),
         Commands::Doctor => commands::doctor::run(),
         Commands::Serve { bind, db } => {
             let db_path = match db {
@@ -270,7 +282,7 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     parse(a).cmp(&parse(b))
 }
 
-async fn run_update() -> error::Result<()> {
+async fn run_update(target: Option<&str>) -> error::Result<()> {
     let path = config::Config::installed_servers_path()?;
     if !path.exists() {
         println!("No servers installed.");
@@ -285,16 +297,44 @@ async fn run_update() -> error::Result<()> {
         return Ok(());
     }
 
-    println!("Checking {} server(s) for updates...\n", installed.servers.len());
+    // Filter to a specific server if requested
+    let servers_to_check: Vec<&api::types::InstalledServer> = if let Some(target_ref) = target {
+        let parts: Vec<&str> = target_ref.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            return Err(error::McpRegError::Config(
+                "Server reference must be in format 'owner/name'".into(),
+            ));
+        }
+        let (t_owner, t_name) = (parts[0], parts[1]);
+        let filtered: Vec<_> = installed
+            .servers
+            .iter()
+            .filter(|s| s.owner == t_owner && s.name == t_name)
+            .collect();
+        if filtered.is_empty() {
+            return Err(error::McpRegError::NotFound(format!(
+                "{t_owner}/{t_name} is not installed"
+            )));
+        }
+        filtered
+    } else {
+        installed.servers.iter().collect()
+    };
+
+    println!(
+        "Checking {} server(s) for updates...\n",
+        servers_to_check.len()
+    );
 
     let cfg = config::Config::load()?;
     let client = api::client::RegistryClient::new(&cfg);
     let mut updated = 0;
 
-    for server in &installed.servers {
+    for server in &servers_to_check {
         match client.get_server(&server.owner, &server.name).await {
             Ok(entry) => {
-                if compare_versions(&entry.version, &server.version) == std::cmp::Ordering::Greater {
+                if compare_versions(&entry.version, &server.version) == std::cmp::Ordering::Greater
+                {
                     println!(
                         "  ↑ {}/{}: {} → {}",
                         server.owner, server.name, server.version, entry.version

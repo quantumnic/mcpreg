@@ -53,6 +53,7 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/stats", axum::routing::get(routes::stats))
         .route("/api/v1/tools", axum::routing::get(routes::tools_index))
         .route("/api/v1/categories", axum::routing::get(routes::categories))
+        .route("/api/v1/prompts", axum::routing::get(routes::prompts_index))
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -481,6 +482,23 @@ mod tools_endpoint_tests {
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(result["tools"].as_array().unwrap().len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_api_prompts_index() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/prompts")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // May have 0 prompts in seed data, but endpoint should work
+        assert!(result["total"].is_number());
+        assert!(result["prompts"].is_array());
     }
 
     #[tokio::test]

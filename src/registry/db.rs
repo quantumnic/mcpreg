@@ -151,11 +151,12 @@ impl Database {
         let mut param_values: Vec<String> = Vec::new();
 
         for term in &terms {
-            let pattern = format!("%{term}%");
+            let escaped = escape_like(term);
+            let pattern = format!("%{escaped}%");
             let idx = param_values.len();
             param_values.push(pattern);
             conditions.push(format!(
-                "(name LIKE ?{p} OR description LIKE ?{p} OR owner LIKE ?{p} OR tools LIKE ?{p} OR author LIKE ?{p} OR category LIKE ?{p})",
+                "(name LIKE ?{p} ESCAPE '\\' OR description LIKE ?{p} ESCAPE '\\' OR owner LIKE ?{p} ESCAPE '\\' OR tools LIKE ?{p} ESCAPE '\\' OR author LIKE ?{p} ESCAPE '\\' OR category LIKE ?{p} ESCAPE '\\')",
                 p = idx + 1
             ));
         }
@@ -166,18 +167,19 @@ impl Database {
         let mut score_parts = Vec::new();
         for term in &terms {
             let exact_name = term.to_string();
-            let pattern = format!("%{term}%");
+            let escaped = escape_like(term);
+            let pattern = format!("%{escaped}%");
             let idx_exact = param_values.len() + 1;
             param_values.push(exact_name);
             let idx_like = param_values.len() + 1;
             param_values.push(pattern);
             score_parts.push(format!(
                 "(CASE WHEN name = ?{idx_exact} THEN 200 ELSE 0 END \
-                 + CASE WHEN name LIKE ?{idx_like} THEN 100 ELSE 0 END \
-                 + CASE WHEN owner LIKE ?{idx_like} THEN 50 ELSE 0 END \
-                 + CASE WHEN tools LIKE ?{idx_like} THEN 40 ELSE 0 END \
-                 + CASE WHEN category LIKE ?{idx_like} THEN 20 ELSE 0 END \
-                 + CASE WHEN description LIKE ?{idx_like} THEN 10 ELSE 0 END)"
+                 + CASE WHEN name LIKE ?{idx_like} ESCAPE '\\' THEN 100 ELSE 0 END \
+                 + CASE WHEN owner LIKE ?{idx_like} ESCAPE '\\' THEN 50 ELSE 0 END \
+                 + CASE WHEN tools LIKE ?{idx_like} ESCAPE '\\' THEN 40 ELSE 0 END \
+                 + CASE WHEN category LIKE ?{idx_like} ESCAPE '\\' THEN 20 ELSE 0 END \
+                 + CASE WHEN description LIKE ?{idx_like} ESCAPE '\\' THEN 10 ELSE 0 END)"
             ));
         }
         let score_expr = score_parts.join(" + ");
@@ -210,7 +212,8 @@ impl Database {
     /// Search servers filtered by category (server-side).
     #[allow(dead_code)]
     pub fn search_by_category(&self, category: &str) -> Result<Vec<ServerEntry>> {
-        let pattern = format!("%{category}%");
+        let escaped = escape_like(category);
+        let pattern = format!("%{escaped}%");
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
                     command, args, transport, tools, resources, prompts, category, downloads, created_at, updated_at
@@ -326,6 +329,33 @@ impl Database {
         Ok(result)
     }
 
+    /// List all unique prompt names with their server counts.
+    pub fn list_prompts(&self) -> Result<Vec<(String, Vec<String>)>> {
+        let mut stmt = self.conn.prepare("SELECT owner, name, prompts FROM servers")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+
+        let mut prompt_map: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            let (owner, name, prompts_json) = row?;
+            let prompts: Vec<String> = serde_json::from_str(&prompts_json).unwrap_or_default();
+            let full_name = format!("{owner}/{name}");
+            for prompt in prompts {
+                prompt_map.entry(prompt).or_default().push(full_name.clone());
+            }
+        }
+
+        let mut result: Vec<(String, Vec<String>)> = prompt_map.into_iter().collect();
+        result.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        Ok(result)
+    }
+
     /// List all distinct categories with counts.
     #[allow(dead_code)]
     pub fn list_categories(&self) -> Result<Vec<(String, usize)>> {
@@ -341,6 +371,14 @@ impl Database {
         }
         Ok(cats)
     }
+}
+
+/// Escape SQL LIKE wildcard characters (`%`, `_`) in user input.
+fn escape_like(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// Row mapper for server queries (reused across methods).
@@ -946,13 +984,23 @@ mod search_tests {
     }
 
     #[test]
-    fn test_search_percent_char() {
+    fn test_search_percent_char_escaped() {
         let db = Database::open_in_memory().unwrap();
         db.upsert_server(&make_entry("a", "s1", vec![], 0)).unwrap();
-        // '%' is special in LIKE patterns
+        // '%' should be escaped and NOT match everything
         let results = db.search("%").unwrap();
-        // Should match all since % in LIKE matches everything
-        assert!(!results.is_empty());
+        assert!(results.is_empty(), "Escaped '%' should not match all servers");
+    }
+
+    #[test]
+    fn test_search_underscore_char_escaped() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("a", "ab", vec![], 0)).unwrap();
+        db.upsert_server(&make_entry("a", "a_b", vec![], 0)).unwrap();
+        // '_' in LIKE matches any single char — after escaping it should match literal '_'
+        let results = db.search("a_b").unwrap();
+        assert_eq!(results.len(), 1, "Should only match literal underscore");
+        assert_eq!(results[0].name, "a_b");
     }
 
     #[test]
@@ -970,6 +1018,15 @@ mod search_tests {
         db.upsert_server(&make_entry("a", "s1", vec![], 0)).unwrap();
         let (servers, _) = db.list_servers(0, 10).unwrap();
         assert_eq!(servers.len(), 1);
+    }
+
+    #[test]
+    fn test_escape_like_function() {
+        assert_eq!(escape_like("hello"), "hello");
+        assert_eq!(escape_like("100%"), "100\\%");
+        assert_eq!(escape_like("a_b"), "a\\_b");
+        assert_eq!(escape_like("a\\b"), "a\\\\b");
+        assert_eq!(escape_like("%_\\"), "\\%\\_\\\\");
     }
 
     #[test]
@@ -1016,6 +1073,49 @@ mod tools_index_tests {
                 "Expected sorted by server count desc"
             );
         }
+    }
+
+    #[test]
+    fn test_list_prompts_empty_db() {
+        let db = Database::open_in_memory().unwrap();
+        let prompts = db.list_prompts().unwrap();
+        assert!(prompts.is_empty());
+    }
+
+    #[test]
+    fn test_list_prompts_with_data() {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = ServerEntry {
+            id: None,
+            owner: "alice".into(),
+            name: "prompt-tool".into(),
+            version: "1.0.0".into(),
+            description: "Test".into(),
+            author: "alice".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec!["summarize".into(), "analyze".into()],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+        entry.owner = "bob".into();
+        entry.name = "other-tool".into();
+        entry.prompts = vec!["summarize".into(), "translate".into()];
+        db.upsert_server(&entry).unwrap();
+
+        let prompts = db.list_prompts().unwrap();
+        assert_eq!(prompts.len(), 3); // summarize, analyze, translate
+
+        // summarize should be in 2 servers
+        let summarize = prompts.iter().find(|(p, _)| p == "summarize").unwrap();
+        assert_eq!(summarize.1.len(), 2);
     }
 
     #[test]

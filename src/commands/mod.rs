@@ -15,3 +15,4 @@ pub mod stats;
 pub mod tags;
 pub mod uninstall;
 pub mod validate;
+pub mod which;

@@ -307,6 +307,46 @@ pub struct ToolsQuery {
     pub limit: Option<usize>,
 }
 
+/// GET /api/v1/prompts — list all unique prompts across the registry
+pub async fn prompts_index(
+    State(db): State<DbState>,
+    Query(params): Query<ToolsQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let all_prompts = db.list_prompts()?;
+
+    let mut items: Vec<serde_json::Value> = all_prompts
+        .into_iter()
+        .map(|(prompt, servers)| {
+            serde_json::json!({
+                "prompt": prompt,
+                "server_count": servers.len(),
+                "servers": servers,
+            })
+        })
+        .collect();
+
+    // Optional name filter
+    if let Some(ref q) = params.q {
+        let q_lower = q.to_lowercase();
+        items.retain(|item| {
+            item["prompt"]
+                .as_str()
+                .map(|p| p.to_lowercase().contains(&q_lower))
+                .unwrap_or(false)
+        });
+    }
+
+    let total = items.len();
+    let limit = params.limit.unwrap_or(100).min(500);
+    items.truncate(limit);
+
+    Ok(Json(serde_json::json!({
+        "prompts": items,
+        "total": total,
+    })))
+}
+
 #[derive(Deserialize)]
 pub struct SimilarQuery {
     pub limit: Option<usize>,
