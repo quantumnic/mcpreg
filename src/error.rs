@@ -1,3 +1,5 @@
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use std::fmt;
 
 #[derive(Debug)]
@@ -13,6 +15,7 @@ pub enum McpRegError {
     NotFound(String),
     Auth(String),
     Manifest(String),
+    Validation(String),
 }
 
 impl fmt::Display for McpRegError {
@@ -29,11 +32,28 @@ impl fmt::Display for McpRegError {
             Self::NotFound(msg) => write!(f, "Not found: {msg}"),
             Self::Auth(msg) => write!(f, "Auth error: {msg}"),
             Self::Manifest(msg) => write!(f, "Manifest error: {msg}"),
+            Self::Validation(msg) => write!(f, "Validation error: {msg}"),
         }
     }
 }
 
 impl std::error::Error for McpRegError {}
+
+/// Map McpRegError to HTTP responses with JSON error bodies.
+impl IntoResponse for McpRegError {
+    fn into_response(self) -> Response {
+        let (status, message) = match &self {
+            McpRegError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
+            McpRegError::Auth(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
+            McpRegError::Validation(msg) | McpRegError::Manifest(msg) => {
+                (StatusCode::BAD_REQUEST, msg.clone())
+            }
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        };
+        let body = serde_json::json!({ "error": message });
+        (status, axum::Json(body)).into_response()
+    }
+}
 
 impl From<std::io::Error> for McpRegError {
     fn from(e: std::io::Error) -> Self {

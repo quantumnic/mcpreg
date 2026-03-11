@@ -31,13 +31,30 @@ impl Config {
         Ok(Self::config_dir()?.join("config.toml"))
     }
 
+    /// Load config from file, then overlay environment variables.
+    /// - `MCPREG_REGISTRY_URL` overrides `registry_url`
+    /// - `MCPREG_API_KEY` overrides `api_key`
+    /// - `MCPREG_INSTALL_DIR` overrides `install_dir`
     pub fn load() -> Result<Self> {
         let path = Self::config_path()?;
-        if !path.exists() {
-            return Ok(Self::default());
+        let mut config = if path.exists() {
+            let content = std::fs::read_to_string(&path)?;
+            toml::from_str::<Config>(&content)?
+        } else {
+            Self::default()
+        };
+
+        // Environment variable overrides
+        if let Ok(url) = std::env::var("MCPREG_REGISTRY_URL") {
+            config.registry_url = url;
         }
-        let content = std::fs::read_to_string(&path)?;
-        let config: Config = toml::from_str(&content)?;
+        if let Ok(key) = std::env::var("MCPREG_API_KEY") {
+            config.api_key = Some(key);
+        }
+        if let Ok(dir) = std::env::var("MCPREG_INSTALL_DIR") {
+            config.install_dir = Some(dir);
+        }
+
         Ok(config)
     }
 
@@ -81,6 +98,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.registry_url, "https://registry.mcpreg.dev");
         assert!(config.api_key.is_none());
+        assert!(config.install_dir.is_none());
     }
 
     #[test]
@@ -88,17 +106,31 @@ mod tests {
         let config = Config {
             registry_url: "http://localhost:3000".into(),
             api_key: Some("test-key".into()),
-            install_dir: None,
+            install_dir: Some("/opt/mcp".into()),
         };
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.registry_url, "http://localhost:3000");
         assert_eq!(deserialized.api_key.unwrap(), "test-key");
+        assert_eq!(deserialized.install_dir.unwrap(), "/opt/mcp");
     }
 
     #[test]
     fn test_config_dir_is_under_home() {
         let dir = Config::config_dir().unwrap();
         assert!(dir.to_string_lossy().contains(".mcpreg"));
+    }
+
+    #[test]
+    fn test_env_var_overrides() {
+        // Set env vars, load, check they override
+        std::env::set_var("MCPREG_REGISTRY_URL", "http://test:9999");
+        std::env::set_var("MCPREG_API_KEY", "env-key-123");
+        let config = Config::load().unwrap();
+        assert_eq!(config.registry_url, "http://test:9999");
+        assert_eq!(config.api_key.as_deref(), Some("env-key-123"));
+        // Cleanup
+        std::env::remove_var("MCPREG_REGISTRY_URL");
+        std::env::remove_var("MCPREG_API_KEY");
     }
 }

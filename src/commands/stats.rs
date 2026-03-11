@@ -2,21 +2,41 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::registry::db::Database;
 
-pub fn run() -> Result<()> {
+pub fn run(json_output: bool) -> Result<()> {
     let db_path = Config::db_path()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "registry.db".to_string());
 
     let db = Database::open(&db_path)?;
 
-    // Seed if empty
     match db.seed_default_servers() {
         Ok(0) => {}
-        Ok(n) => eprintln!("ℹ  Seeded {n} default servers into local registry."),
-        Err(e) => eprintln!("⚠  Could not seed defaults: {e}"),
+        Ok(n) => {
+            if !json_output {
+                eprintln!("ℹ  Seeded {n} default servers into local registry.");
+            }
+        }
+        Err(e) => {
+            if !json_output {
+                eprintln!("⚠  Could not seed defaults: {e}");
+            }
+        }
     }
 
     let stats = db.stats()?;
+
+    if json_output {
+        let v = serde_json::json!({
+            "total_servers": stats.total_servers,
+            "total_downloads": stats.total_downloads,
+            "unique_owners": stats.unique_owners,
+            "avg_tools": stats.avg_tools,
+            "top_servers": stats.top_servers.iter().map(|(n, d)| serde_json::json!({"name": n, "downloads": d})).collect::<Vec<_>>(),
+            "transports": stats.transport_counts.iter().map(|(t, c)| serde_json::json!({"transport": t, "count": c})).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
 
     println!("╔══════════════════════════════════════════╗");
     println!("║         mcpreg Registry Stats            ║");

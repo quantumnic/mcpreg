@@ -22,11 +22,14 @@ struct Cli {
 enum Commands {
     /// Search for MCP servers in the registry
     Search {
-        /// Search query
+        /// Search query (supports multiple words for AND matching)
         query: String,
         /// Output results as JSON
         #[arg(long)]
         json: bool,
+        /// Filter results by category (e.g. "database", "search", "browser")
+        #[arg(short, long)]
+        category: Option<String>,
     },
     /// Install an MCP server and add it to claude_desktop_config.json
     Install {
@@ -45,11 +48,18 @@ enum Commands {
         manifest: Option<String>,
     },
     /// List installed MCP servers
-    List,
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show detailed information about an MCP server
     Info {
         /// Server reference (owner/name)
         server: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Browse all servers in the registry (paginated, with categories)
     Browse {
@@ -71,8 +81,21 @@ enum Commands {
         #[arg(short, long)]
         path: Option<String>,
     },
+    /// Validate an mcpreg.toml manifest
+    Validate {
+        /// Path to mcpreg.toml manifest (default: ./mcpreg.toml)
+        #[arg(short, long)]
+        manifest: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show registry statistics (total servers, downloads, top servers)
-    Stats,
+    Stats {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Start the self-hosted registry server
     Serve {
         /// Bind address (default: 0.0.0.0:3000)
@@ -91,12 +114,16 @@ async fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Search { query, json } => commands::search::run(&query, json).await,
+        Commands::Search {
+            query,
+            json,
+            category,
+        } => commands::search::run(&query, json, category.as_deref()).await,
         Commands::Install { server } => commands::install::run(&server).await,
         Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
-        Commands::List => commands::list::run(),
-        Commands::Info { server } => commands::info::run(&server).await,
+        Commands::List { json } => commands::list::run(json),
+        Commands::Info { server, json } => commands::info::run(&server, json).await,
         Commands::Browse {
             page,
             per_page,
@@ -104,7 +131,10 @@ async fn main() {
         } => commands::browse::run(page, per_page, category.as_deref()),
         Commands::Update => run_update().await,
         Commands::Init { path } => commands::init::run(path.as_deref()),
-        Commands::Stats => commands::stats::run(),
+        Commands::Validate { manifest, json } => {
+            commands::validate::run(manifest.as_deref(), json)
+        }
+        Commands::Stats { json } => commands::stats::run(json),
         Commands::Serve { bind, db } => {
             let db_path = match db {
                 Some(p) => p,
@@ -136,6 +166,8 @@ async fn run_update() -> error::Result<()> {
         println!("No servers installed.");
         return Ok(());
     }
+
+    println!("Checking {} server(s) for updates...\n", installed.servers.len());
 
     let cfg = config::Config::load()?;
     let client = api::client::RegistryClient::new(&cfg);

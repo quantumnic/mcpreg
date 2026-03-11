@@ -33,10 +33,12 @@ pub async fn run_server(bind_addr: &str, db_path: &str) -> crate::error::Result<
 pub fn build_router(db_state: DbState) -> Router {
     Router::new()
         .route("/health", axum::routing::get(routes::health))
+        .route("/api/v1/version", axum::routing::get(routes::version))
         .route("/api/v1/search", axum::routing::get(routes::search))
         .route(
             "/api/v1/servers/:owner/:name",
-            axum::routing::get(routes::get_server),
+            axum::routing::get(routes::get_server)
+                .delete(routes::delete_server),
         )
         .route("/api/v1/servers", axum::routing::get(routes::list_servers))
         .route("/api/v1/publish", axum::routing::post(routes::publish))
@@ -56,7 +58,6 @@ mod tests {
 
     async fn test_app() -> Router {
         let db = Database::open_in_memory().unwrap();
-        // Seed test data
         db.upsert_server(&ServerEntry {
             id: None,
             owner: "modelcontextprotocol".into(),
@@ -93,6 +94,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_api_version() {
+        let app = test_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/version")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["name"], "mcpreg");
+    }
+
+    #[tokio::test]
     async fn test_api_search() {
         let app = test_app().await;
         let req = Request::builder()
@@ -123,6 +138,38 @@ mod tests {
     async fn test_api_get_server_not_found() {
         let app = test_app().await;
         let req = Request::builder()
+            .uri("/api/v1/servers/nobody/nothing")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        // Verify JSON error body
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let err: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(err["error"].as_str().unwrap().contains("nobody/nothing"));
+    }
+
+    #[tokio::test]
+    async fn test_api_delete_server() {
+        let app = test_app().await;
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["success"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_api_delete_not_found() {
+        let app = test_app().await;
+        let req = Request::builder()
+            .method("DELETE")
             .uri("/api/v1/servers/nobody/nothing")
             .body(Body::empty())
             .unwrap();
@@ -176,12 +223,42 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn test_api_publish_validation_error() {
+        let app = test_app().await;
+        let entry = ServerEntry {
+            id: None,
+            owner: "".into(), // invalid: empty
+            name: "test".into(),
+            version: "0.1.0".into(),
+            description: String::new(),
+            author: String::new(),
+            license: String::new(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/publish")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&entry).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
 }
 
 #[cfg(test)]
 mod new_endpoint_tests {
     use super::*;
-    use crate::api::types::ServerEntry;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
@@ -247,7 +324,6 @@ mod new_endpoint_tests {
 
     #[tokio::test]
     async fn test_api_search_tools() {
-        // Search should also match on tool names now
         let app = seeded_app().await;
         let req = Request::builder()
             .uri("/api/v1/search?q=read_file")
@@ -258,10 +334,7 @@ mod new_endpoint_tests {
 
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
-        assert!(
-            search.total > 0,
-            "Should find servers with read_file tool"
-        );
+        assert!(search.total > 0, "Should find servers with read_file tool");
     }
 
     #[tokio::test]
@@ -276,8 +349,24 @@ mod new_endpoint_tests {
 
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
-        // Empty query matches everything via LIKE '%%'
         assert!(search.total >= 30);
+    }
+
+    #[tokio::test]
+    async fn test_api_search_multi_word() {
+        let app = seeded_app().await;
+        // "Anthropic filesystem" should find the filesystem server by Anthropic
+        let req = Request::builder()
+            .uri("/api/v1/search?q=Anthropic%20filesystem")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(search.total >= 1);
+        assert!(search.servers.iter().any(|s| s.name == "filesystem"));
     }
 
     #[tokio::test]
@@ -309,6 +398,6 @@ mod new_endpoint_tests {
 
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let paginated: crate::api::types::PaginatedResponse = serde_json::from_slice(&body).unwrap();
-        assert_eq!(paginated.per_page, 100); // capped at 100
+        assert_eq!(paginated.per_page, 100);
     }
 }

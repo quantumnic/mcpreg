@@ -98,23 +98,58 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Multi-word search: splits query on whitespace, all terms must match (AND semantics).
+    /// Weighted ranking: name > owner > tools > description, plus download bonus.
     pub fn search(&self, query: &str) -> Result<Vec<ServerEntry>> {
-        let pattern = format!("%{query}%");
-        // Weighted search: name matches rank highest, then tools, then description/owner
-        let mut stmt = self.conn.prepare(
+        let terms: Vec<&str> = query.split_whitespace().collect();
+
+        if terms.is_empty() {
+            // Empty query: return all, ordered by downloads
+            return self.list_servers(1, 50).map(|(v, _)| v);
+        }
+
+        // Build dynamic WHERE: every term must match at least one column
+        let mut conditions = Vec::new();
+        let mut param_values: Vec<String> = Vec::new();
+
+        for term in &terms {
+            let pattern = format!("%{term}%");
+            let idx = param_values.len();
+            param_values.push(pattern);
+            conditions.push(format!(
+                "(name LIKE ?{p} OR description LIKE ?{p} OR owner LIKE ?{p} OR tools LIKE ?{p} OR author LIKE ?{p})",
+                p = idx + 1
+            ));
+        }
+
+        let where_clause = conditions.join(" AND ");
+
+        // Relevance scoring uses only the first term for simplicity
+        let first_pattern = format!("%{}%", terms[0]);
+        param_values.push(first_pattern);
+        let score_idx = param_values.len();
+
+        let sql = format!(
             "SELECT id, owner, name, version, description, author, license, repository,
                     command, args, transport, tools, resources, downloads, created_at, updated_at,
-                    (CASE WHEN name LIKE ?1 THEN 100 ELSE 0 END
-                     + CASE WHEN owner LIKE ?1 THEN 50 ELSE 0 END
-                     + CASE WHEN tools LIKE ?1 THEN 30 ELSE 0 END
-                     + CASE WHEN description LIKE ?1 THEN 10 ELSE 0 END
+                    (CASE WHEN name LIKE ?{s} THEN 100 ELSE 0 END
+                     + CASE WHEN owner LIKE ?{s} THEN 50 ELSE 0 END
+                     + CASE WHEN tools LIKE ?{s} THEN 30 ELSE 0 END
+                     + CASE WHEN description LIKE ?{s} THEN 10 ELSE 0 END
                      + downloads / 100) AS relevance
              FROM servers
-             WHERE name LIKE ?1 OR description LIKE ?1 OR owner LIKE ?1 OR tools LIKE ?1
+             WHERE {where_clause}
              ORDER BY relevance DESC, downloads DESC
              LIMIT 50",
-        )?;
-        let rows = stmt.query_map(params![pattern], |row| {
+            s = score_idx,
+        );
+
+        let mut stmt = self.conn.prepare(&sql)?;
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
             Ok(ServerEntryRow {
                 id: row.get(0)?,
                 owner: row.get(1)?,
@@ -177,6 +212,14 @@ impl Database {
         }
     }
 
+    pub fn delete_server(&self, owner: &str, name: &str) -> Result<bool> {
+        let affected = self.conn.execute(
+            "DELETE FROM servers WHERE owner = ?1 AND name = ?2",
+            params![owner, name],
+        )?;
+        Ok(affected > 0)
+    }
+
     pub fn list_servers(&self, page: usize, per_page: usize) -> Result<(Vec<ServerEntry>, usize)> {
         let offset = (page.saturating_sub(1)) * per_page;
 
@@ -230,13 +273,23 @@ impl Database {
         Ok(total)
     }
 
-    #[allow(dead_code)]
-    pub fn increment_downloads(&self, owner: &str, name: &str) -> Result<()> {
-        self.conn.execute(
+    pub fn increment_downloads(&self, owner: &str, name: &str) -> Result<bool> {
+        let affected = self.conn.execute(
             "UPDATE servers SET downloads = downloads + 1 WHERE owner = ?1 AND name = ?2",
             params![owner, name],
         )?;
-        Ok(())
+        Ok(affected > 0)
+    }
+
+    /// Count servers matching a transport type.
+    #[allow(dead_code)]
+    pub fn count_by_transport(&self, transport: &str) -> Result<usize> {
+        let count: usize = self.conn.query_row(
+            "SELECT COUNT(*) FROM servers WHERE transport = ?1",
+            params![transport],
+            |row| row.get(0),
+        )?;
+        Ok(count)
     }
 }
 
@@ -341,6 +394,35 @@ mod tests {
     }
 
     #[test]
+    fn test_db_search_multi_word() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry("alice", "filesystem")).unwrap();
+        db.upsert_server(&test_entry("bob", "sqlite-server")).unwrap();
+        db.upsert_server(&test_entry("carol", "web-scraper")).unwrap();
+
+        // Multi-word: both terms must match
+        let results = db.search("alice filesystem").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "filesystem");
+
+        // No results when terms don't co-occur
+        let results = db.search("alice sqlite").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_db_search_by_author() {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = test_entry("org", "tool");
+        entry.author = "SpecialAuthor".into();
+        db.upsert_server(&entry).unwrap();
+
+        let results = db.search("SpecialAuthor").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "tool");
+    }
+
+    #[test]
     fn test_db_list_paginated() {
         let db = Database::open_in_memory().unwrap();
         for i in 0..5 {
@@ -373,10 +455,30 @@ mod tests {
     fn test_db_increment_downloads() {
         let db = Database::open_in_memory().unwrap();
         db.upsert_server(&test_entry("alice", "tool")).unwrap();
-        db.increment_downloads("alice", "tool").unwrap();
-        db.increment_downloads("alice", "tool").unwrap();
+        assert!(db.increment_downloads("alice", "tool").unwrap());
+        assert!(db.increment_downloads("alice", "tool").unwrap());
         let server = db.get_server("alice", "tool").unwrap().unwrap();
         assert_eq!(server.downloads, 2);
+    }
+
+    #[test]
+    fn test_db_increment_downloads_nonexistent() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(!db.increment_downloads("nobody", "nothing").unwrap());
+    }
+
+    #[test]
+    fn test_db_delete_server() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry("alice", "tool")).unwrap();
+        assert!(db.delete_server("alice", "tool").unwrap());
+        assert!(db.get_server("alice", "tool").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_db_delete_nonexistent() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(!db.delete_server("nobody", "nothing").unwrap());
     }
 
     #[test]
@@ -384,6 +486,15 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let result = db.get_server("nobody", "nothing").unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_db_count_by_transport() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry("a", "s1")).unwrap();
+        db.upsert_server(&test_entry("b", "s2")).unwrap();
+        assert_eq!(db.count_by_transport("stdio").unwrap(), 2);
+        assert_eq!(db.count_by_transport("sse").unwrap(), 0);
     }
 }
 
@@ -463,6 +574,7 @@ mod stats_tests {
         assert_eq!(stats.total_servers, 0);
         assert_eq!(stats.total_downloads, 0);
         assert_eq!(stats.unique_owners, 0);
+        assert_eq!(stats.avg_tools, 0.0);
     }
 
     #[test]
@@ -546,5 +658,24 @@ mod search_tests {
         assert!(first > 0);
         let second = db.seed_default_servers().unwrap();
         assert_eq!(second, 0, "Second seed should insert nothing");
+    }
+
+    #[test]
+    fn test_search_empty_returns_all() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("a", "s1", vec![], 10)).unwrap();
+        db.upsert_server(&make_entry("b", "s2", vec![], 20)).unwrap();
+        let results = db.search("").unwrap();
+        assert_eq!(results.len(), 2);
+        // Should be ordered by downloads desc
+        assert_eq!(results[0].name, "s2");
+    }
+
+    #[test]
+    fn test_search_whitespace_only() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("a", "s1", vec![], 0)).unwrap();
+        let results = db.search("   ").unwrap();
+        assert_eq!(results.len(), 1);
     }
 }

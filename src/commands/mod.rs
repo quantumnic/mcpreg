@@ -7,3 +7,4 @@ pub mod publish;
 pub mod search;
 pub mod stats;
 pub mod uninstall;
+pub mod validate;

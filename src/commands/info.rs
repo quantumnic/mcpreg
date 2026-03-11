@@ -2,7 +2,7 @@ use crate::api::client::RegistryClient;
 use crate::config::Config;
 use crate::error::{McpRegError, Result};
 
-pub async fn run(server_ref: &str) -> Result<()> {
+pub async fn run(server_ref: &str, json_output: bool) -> Result<()> {
     let parts: Vec<&str> = server_ref.splitn(2, '/').collect();
     if parts.len() != 2 {
         return Err(McpRegError::Config(
@@ -14,6 +14,11 @@ pub async fn run(server_ref: &str) -> Result<()> {
     let config = Config::load()?;
     let client = RegistryClient::new(&config);
     let entry = client.get_server(owner, name).await?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&entry)?);
+        return Ok(());
+    }
 
     println!("{}/{} v{}", entry.owner, entry.name, entry.version);
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -34,7 +39,7 @@ pub async fn run(server_ref: &str) -> Result<()> {
     println!("Downloads:   {}", entry.downloads);
 
     if !entry.tools.is_empty() {
-        println!("\nTools:");
+        println!("\nTools ({}):", entry.tools.len());
         for tool in &entry.tools {
             println!("  • {tool}");
         }
@@ -51,6 +56,9 @@ pub async fn run(server_ref: &str) -> Result<()> {
     if let Some(ref updated) = entry.updated_at {
         println!("Updated: {updated}");
     }
+
+    // Installation hint
+    println!("\nInstall: mcpreg install {}/{}", entry.owner, entry.name);
 
     Ok(())
 }

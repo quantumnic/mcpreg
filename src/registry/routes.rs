@@ -1,8 +1,8 @@
 use crate::api::types::{PaginatedResponse, PublishResponse, SearchResponse, ServerEntry};
+use crate::error::McpRegError;
 #[allow(unused_imports)]
 use crate::registry::db::Database;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use axum::response::Json;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -24,83 +24,106 @@ pub struct PaginationQuery {
 pub async fn search(
     State(db): State<DbState>,
     Query(params): Query<SearchQuery>,
-) -> Result<Json<SearchResponse>, StatusCode> {
+) -> Result<Json<SearchResponse>, McpRegError> {
     let query = params.q.unwrap_or_default();
     let db = db.lock().await;
-    match db.search(&query) {
-        Ok(servers) => {
-            let total = servers.len();
-            Ok(Json(SearchResponse { servers, total }))
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+    let servers = db.search(&query)?;
+    let total = servers.len();
+    Ok(Json(SearchResponse { servers, total }))
 }
 
 pub async fn get_server(
     State(db): State<DbState>,
     Path((owner, name)): Path<(String, String)>,
-) -> Result<Json<ServerEntry>, StatusCode> {
+) -> Result<Json<ServerEntry>, McpRegError> {
     let db = db.lock().await;
-    match db.get_server(&owner, &name) {
-        Ok(Some(entry)) => Ok(Json(entry)),
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    // Track download on info fetch
+    let _ = db.increment_downloads(&owner, &name);
+    match db.get_server(&owner, &name)? {
+        Some(entry) => Ok(Json(entry)),
+        None => Err(McpRegError::NotFound(format!("{owner}/{name}"))),
+    }
+}
+
+pub async fn delete_server(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    // Note: In production, validate Authorization header matches the owner
+    let db = db.lock().await;
+    if db.delete_server(&owner, &name)? {
+        Ok(Json(serde_json::json!({
+            "success": true,
+            "message": format!("Deleted {owner}/{name}")
+        })))
+    } else {
+        Err(McpRegError::NotFound(format!("{owner}/{name}")))
     }
 }
 
 pub async fn publish(
     State(db): State<DbState>,
     Json(entry): Json<ServerEntry>,
-) -> Result<Json<PublishResponse>, StatusCode> {
-    // Note: In production, validate the Authorization header / API key here
-    let db = db.lock().await;
-    match db.upsert_server(&entry) {
-        Ok(_) => Ok(Json(PublishResponse {
-            success: true,
-            message: format!("Published {}/{} v{}", entry.owner, entry.name, entry.version),
-        })),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+) -> Result<Json<PublishResponse>, McpRegError> {
+    // Validate required fields
+    if entry.owner.is_empty() || entry.name.is_empty() {
+        return Err(McpRegError::Validation("owner and name are required".into()));
     }
+    if entry.command.is_empty() {
+        return Err(McpRegError::Validation("command is required".into()));
+    }
+
+    let db = db.lock().await;
+    db.upsert_server(&entry)?;
+    Ok(Json(PublishResponse {
+        success: true,
+        message: format!("Published {}/{} v{}", entry.owner, entry.name, entry.version),
+    }))
 }
 
 pub async fn list_servers(
     State(db): State<DbState>,
     Query(params): Query<PaginationQuery>,
-) -> Result<Json<PaginatedResponse>, StatusCode> {
-    let page = params.page.unwrap_or(1);
+) -> Result<Json<PaginatedResponse>, McpRegError> {
+    let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(20).min(100);
     let db = db.lock().await;
-    match db.list_servers(page, per_page) {
-        Ok((servers, total)) => Ok(Json(PaginatedResponse {
-            servers,
-            page,
-            per_page,
-            total,
-        })),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+    let (servers, total) = db.list_servers(page, per_page)?;
+    Ok(Json(PaginatedResponse {
+        servers,
+        page,
+        per_page,
+        total,
+    }))
 }
 
 pub async fn health() -> &'static str {
     "ok"
 }
 
+/// GET /api/v1/version — server version info
+pub async fn version() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "name": "mcpreg",
+        "version": env!("CARGO_PKG_VERSION"),
+        "description": env!("CARGO_PKG_DESCRIPTION"),
+    }))
+}
+
 /// GET /api/v1/stats — aggregate registry statistics
 pub async fn stats(
     State(db): State<DbState>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, McpRegError> {
     let db = db.lock().await;
-    match db.stats() {
-        Ok(s) => Ok(Json(serde_json::json!({
-            "total_servers": s.total_servers,
-            "total_downloads": s.total_downloads,
-            "unique_owners": s.unique_owners,
-            "avg_tools": s.avg_tools,
-            "top_servers": s.top_servers.iter().map(|(n, d)| serde_json::json!({"name": n, "downloads": d})).collect::<Vec<_>>(),
-            "transports": s.transport_counts.iter().map(|(t, c)| serde_json::json!({"transport": t, "count": c})).collect::<Vec<_>>(),
-        }))),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+    let s = db.stats()?;
+    Ok(Json(serde_json::json!({
+        "total_servers": s.total_servers,
+        "total_downloads": s.total_downloads,
+        "unique_owners": s.unique_owners,
+        "avg_tools": s.avg_tools,
+        "top_servers": s.top_servers.iter().map(|(n, d)| serde_json::json!({"name": n, "downloads": d})).collect::<Vec<_>>(),
+        "transports": s.transport_counts.iter().map(|(t, c)| serde_json::json!({"transport": t, "count": c})).collect::<Vec<_>>(),
+    })))
 }
 
 #[derive(Deserialize)]
@@ -114,12 +137,12 @@ pub struct CategoryQuery {
 pub async fn categories(
     State(db): State<DbState>,
     Query(params): Query<CategoryQuery>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, McpRegError> {
     use crate::registry::seed::server_category;
     use std::collections::BTreeMap;
 
     let db = db.lock().await;
-    let (servers, _) = db.list_servers(1, 1000).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (servers, _) = db.list_servers(1, 1000)?;
 
     let mut by_cat: BTreeMap<String, Vec<&ServerEntry>> = BTreeMap::new();
     for s in &servers {
@@ -165,5 +188,13 @@ mod tests {
     async fn test_health_endpoint() {
         let result = health().await;
         assert_eq!(result, "ok");
+    }
+
+    #[tokio::test]
+    async fn test_version_endpoint() {
+        let result = version().await;
+        let v = result.0;
+        assert_eq!(v["name"], "mcpreg");
+        assert!(!v["version"].as_str().unwrap().is_empty());
     }
 }
