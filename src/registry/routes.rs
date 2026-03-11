@@ -1,4 +1,5 @@
 use crate::api::types::{PaginatedResponse, PublishResponse, SearchResponse, ServerEntry};
+#[allow(unused_imports)]
 use crate::registry::db::Database;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -82,6 +83,78 @@ pub async fn list_servers(
 
 pub async fn health() -> &'static str {
     "ok"
+}
+
+/// GET /api/v1/stats — aggregate registry statistics
+pub async fn stats(
+    State(db): State<DbState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let db = db.lock().await;
+    match db.stats() {
+        Ok(s) => Ok(Json(serde_json::json!({
+            "total_servers": s.total_servers,
+            "total_downloads": s.total_downloads,
+            "unique_owners": s.unique_owners,
+            "avg_tools": s.avg_tools,
+            "top_servers": s.top_servers.iter().map(|(n, d)| serde_json::json!({"name": n, "downloads": d})).collect::<Vec<_>>(),
+            "transports": s.transport_counts.iter().map(|(t, c)| serde_json::json!({"transport": t, "count": c})).collect::<Vec<_>>(),
+        }))),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct CategoryQuery {
+    pub category: Option<String>,
+    pub page: Option<usize>,
+    pub per_page: Option<usize>,
+}
+
+/// GET /api/v1/categories — list servers grouped or filtered by category
+pub async fn categories(
+    State(db): State<DbState>,
+    Query(params): Query<CategoryQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    use crate::registry::seed::server_category;
+    use std::collections::BTreeMap;
+
+    let db = db.lock().await;
+    let (servers, _) = db.list_servers(1, 1000).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut by_cat: BTreeMap<String, Vec<&ServerEntry>> = BTreeMap::new();
+    for s in &servers {
+        let cat = server_category(&s.owner, &s.name).to_string();
+        by_cat.entry(cat).or_default().push(s);
+    }
+
+    if let Some(ref filter) = params.category {
+        let filter_lower = filter.to_lowercase();
+        by_cat.retain(|k, _| k.to_lowercase().contains(&filter_lower));
+    }
+
+    let page = params.page.unwrap_or(1);
+    let per_page = params.per_page.unwrap_or(50).min(200);
+
+    let categories: Vec<serde_json::Value> = by_cat
+        .iter()
+        .map(|(cat, servers)| {
+            serde_json::json!({
+                "category": cat,
+                "count": servers.len(),
+                "servers": servers.iter().map(|s| s.full_name()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    let total = categories.len();
+    let start = (page.saturating_sub(1)) * per_page;
+    let page_items: Vec<_> = categories.into_iter().skip(start).take(per_page).collect();
+
+    Ok(Json(serde_json::json!({
+        "categories": page_items,
+        "total": total,
+        "page": page,
+    })))
 }
 
 #[cfg(test)]

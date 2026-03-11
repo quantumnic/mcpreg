@@ -1,6 +1,9 @@
 pub mod browse;
 pub mod info;
+pub mod init;
 pub mod install;
 pub mod list;
 pub mod publish;
 pub mod search;
+pub mod stats;
+pub mod uninstall;

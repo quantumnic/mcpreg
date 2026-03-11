@@ -665,13 +665,14 @@ pub fn server_category(owner: &str, name: &str) -> &'static str {
         (_, n) if n.contains("search") => "🔍 Search",
         (_, n) if ["filesystem", "git", "gdrive", "google-drive"].contains(&n) => "📁 Files & VCS",
         (_, n) if ["postgres", "sqlite", "redis", "astra-db", "neon"].contains(&n) => "🗄️ Databases",
-        (_, n) if ["github", "gitlab", "linear"].contains(&n) => "🛠️ Dev Tools",
+        (_, n) if ["github", "gitlab", "linear", "sentry", "apollo-mcp-server"].contains(&n) => "🛠️ Dev Tools",
         (_, n) if ["slack", "discord"].contains(&n) => "💬 Communication",
         (_, n) if ["puppeteer", "playwright", "stagehand"].contains(&n) => "🌐 Browser Automation",
-        (_, n) if ["memory", "sequentialthinking"].contains(&n) => "🧠 AI & Reasoning",
-        (_, n) if ["time", "fetch", "everything"].contains(&n) => "⚙️ Utilities",
+        (_, n) if ["memory", "sequentialthinking", "context7"].contains(&n) => "🧠 AI & Reasoning",
+        (_, n) if ["time", "fetch", "everything", "google-maps"].contains(&n) => "⚙️ Utilities",
         (_, n) if ["cloudflare", "supabase"].contains(&n) => "☁️ Cloud & Infrastructure",
-        (_, n) if ["stripe-agent-toolkit", "everart"].contains(&n) => "💳 Commerce & Media",
+        (_, n) if ["stripe-agent-toolkit", "everart", "magic-mcp", "apify"].contains(&n) => "💳 Commerce & Media",
+        ("modelcontextprotocol", _) => "📦 Reference",
         _ => "📦 Other",
     }
 }

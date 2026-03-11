@@ -40,6 +40,8 @@ pub fn build_router(db_state: DbState) -> Router {
         )
         .route("/api/v1/servers", axum::routing::get(routes::list_servers))
         .route("/api/v1/publish", axum::routing::post(routes::publish))
+        .route("/api/v1/stats", axum::routing::get(routes::stats))
+        .route("/api/v1/categories", axum::routing::get(routes::categories))
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -173,5 +175,140 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+}
+
+#[cfg(test)]
+mod new_endpoint_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_stats() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/stats")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let stats: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(stats["total_servers"].as_u64().unwrap() >= 30);
+        assert!(stats["total_downloads"].as_i64().unwrap() > 0);
+        assert!(stats["unique_owners"].as_u64().unwrap() > 0);
+        assert!(stats["top_servers"].as_array().unwrap().len() == 5);
+    }
+
+    #[tokio::test]
+    async fn test_api_categories() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/categories")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let cats: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(cats["total"].as_u64().unwrap() > 0);
+        assert!(!cats["categories"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_api_categories_filter() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/categories?category=database")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let cats: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        for cat in cats["categories"].as_array().unwrap() {
+            let name = cat["category"].as_str().unwrap().to_lowercase();
+            assert!(name.contains("database"), "Expected database category, got {name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_search_tools() {
+        // Search should also match on tool names now
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=read_file")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            search.total > 0,
+            "Should find servers with read_file tool"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_api_search_empty_query() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        // Empty query matches everything via LIKE '%%'
+        assert!(search.total >= 30);
+    }
+
+    #[tokio::test]
+    async fn test_api_list_pagination() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers?page=1&per_page=5")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let paginated: crate::api::types::PaginatedResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(paginated.servers.len(), 5);
+        assert_eq!(paginated.per_page, 5);
+        assert!(paginated.total >= 30);
+    }
+
+    #[tokio::test]
+    async fn test_api_list_per_page_capped() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers?per_page=999")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let paginated: crate::api::types::PaginatedResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(paginated.per_page, 100); // capped at 100
     }
 }

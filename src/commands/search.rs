@@ -2,10 +2,15 @@ use crate::api::client::RegistryClient;
 use crate::config::Config;
 use crate::error::Result;
 
-pub async fn run(query: &str) -> Result<()> {
+pub async fn run(query: &str, json_output: bool) -> Result<()> {
     let config = Config::load()?;
     let client = RegistryClient::new(&config);
     let response = client.search(query).await?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+        return Ok(());
+    }
 
     if response.servers.is_empty() {
         println!("No servers found for '{query}'");
@@ -23,7 +28,10 @@ pub async fn run(query: &str) -> Result<()> {
         if !server.tools.is_empty() {
             println!("    Tools: {}", server.tools.join(", "));
         }
-        println!("    Downloads: {} | License: {}", server.downloads, server.license);
+        println!(
+            "    Downloads: {} | License: {}",
+            server.downloads, server.license
+        );
         println!();
     }
     Ok(())

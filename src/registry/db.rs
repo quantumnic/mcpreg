@@ -65,8 +65,8 @@ impl Database {
         let resources_json = serde_json::to_string(&entry.resources)?;
 
         self.conn.execute(
-            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources, downloads)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(owner, name) DO UPDATE SET
                 version = excluded.version,
                 description = excluded.description,
@@ -92,6 +92,7 @@ impl Database {
                 entry.transport,
                 tools_json,
                 resources_json,
+                entry.downloads,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -99,12 +100,18 @@ impl Database {
 
     pub fn search(&self, query: &str) -> Result<Vec<ServerEntry>> {
         let pattern = format!("%{query}%");
+        // Weighted search: name matches rank highest, then tools, then description/owner
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, downloads, created_at, updated_at,
+                    (CASE WHEN name LIKE ?1 THEN 100 ELSE 0 END
+                     + CASE WHEN owner LIKE ?1 THEN 50 ELSE 0 END
+                     + CASE WHEN tools LIKE ?1 THEN 30 ELSE 0 END
+                     + CASE WHEN description LIKE ?1 THEN 10 ELSE 0 END
+                     + downloads / 100) AS relevance
              FROM servers
-             WHERE name LIKE ?1 OR description LIKE ?1 OR owner LIKE ?1
-             ORDER BY downloads DESC
+             WHERE name LIKE ?1 OR description LIKE ?1 OR owner LIKE ?1 OR tools LIKE ?1
+             ORDER BY relevance DESC, downloads DESC
              LIMIT 50",
         )?;
         let rows = stmt.query_map(params![pattern], |row| {
@@ -325,11 +332,11 @@ mod tests {
         db.upsert_server(&test_entry("bob", "sqlite-server")).unwrap();
         db.upsert_server(&test_entry("carol", "web-scraper")).unwrap();
 
-        let results = db.search("file").unwrap();
+        let results = db.search("filesystem").unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "filesystem");
 
-        let results = db.search("server").unwrap();
+        let results = db.search("sqlite").unwrap();
         assert!(results.iter().any(|s| s.name == "sqlite-server"));
     }
 
@@ -377,5 +384,167 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let result = db.get_server("nobody", "nothing").unwrap();
         assert!(result.is_none());
+    }
+}
+
+/// Registry statistics.
+pub struct RegistryStats {
+    pub total_servers: usize,
+    pub total_downloads: i64,
+    pub unique_owners: usize,
+    pub avg_tools: f64,
+    pub top_servers: Vec<(String, i64)>,
+    pub transport_counts: Vec<(String, usize)>,
+}
+
+impl Database {
+    /// Compute aggregate statistics for the registry.
+    pub fn stats(&self) -> Result<RegistryStats> {
+        let total_servers: usize =
+            self.conn.query_row("SELECT COUNT(*) FROM servers", [], |r| r.get(0))?;
+        let total_downloads: i64 =
+            self.conn.query_row("SELECT COALESCE(SUM(downloads),0) FROM servers", [], |r| r.get(0))?;
+        let unique_owners: usize =
+            self.conn.query_row("SELECT COUNT(DISTINCT owner) FROM servers", [], |r| r.get(0))?;
+
+        // Average number of tools per server
+        let mut stmt = self.conn.prepare("SELECT tools FROM servers")?;
+        let tools_rows: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        let total_tools: usize = tools_rows
+            .iter()
+            .map(|t| serde_json::from_str::<Vec<String>>(t).map(|v| v.len()).unwrap_or(0))
+            .sum();
+        let avg_tools = if total_servers > 0 {
+            total_tools as f64 / total_servers as f64
+        } else {
+            0.0
+        };
+
+        // Top 5 servers
+        let mut stmt = self.conn.prepare(
+            "SELECT owner || '/' || name, downloads FROM servers ORDER BY downloads DESC LIMIT 5",
+        )?;
+        let top_servers: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Transport counts
+        let mut stmt = self.conn.prepare(
+            "SELECT transport, COUNT(*) FROM servers GROUP BY transport ORDER BY COUNT(*) DESC",
+        )?;
+        let transport_counts: Vec<(String, usize)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, usize>(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(RegistryStats {
+            total_servers,
+            total_downloads,
+            unique_owners,
+            avg_tools,
+            top_servers,
+            transport_counts,
+        })
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    #[test]
+    fn test_stats_empty_db() {
+        let db = Database::open_in_memory().unwrap();
+        let stats = db.stats().unwrap();
+        assert_eq!(stats.total_servers, 0);
+        assert_eq!(stats.total_downloads, 0);
+        assert_eq!(stats.unique_owners, 0);
+    }
+
+    #[test]
+    fn test_stats_with_data() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let stats = db.stats().unwrap();
+        assert!(stats.total_servers >= 30);
+        assert!(stats.total_downloads > 0);
+        assert!(stats.unique_owners > 1);
+        assert!(stats.avg_tools > 0.0);
+        assert_eq!(stats.top_servers.len(), 5);
+        assert!(!stats.transport_counts.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn make_entry(owner: &str, name: &str, tools: Vec<&str>, downloads: i64) -> ServerEntry {
+        ServerEntry {
+            id: None,
+            owner: owner.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: format!("Server {name} by {owner}"),
+            author: owner.into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: tools.into_iter().map(String::from).collect(),
+            resources: vec![],
+            downloads,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_search_by_tool_name() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("alice", "files", vec!["read_file", "write_file"], 10)).unwrap();
+        db.upsert_server(&make_entry("bob", "math", vec!["calculate"], 20)).unwrap();
+
+        let results = db.search("read_file").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "files");
+    }
+
+    #[test]
+    fn test_search_weighted_ordering() {
+        let db = Database::open_in_memory().unwrap();
+        // Name match should rank above description match
+        db.upsert_server(&make_entry("org", "sqlite", vec![], 10)).unwrap();
+        db.upsert_server(&{
+            let mut e = make_entry("org", "data-tool", vec![], 10);
+            e.description = "Works with sqlite databases".into();
+            e
+        }).unwrap();
+
+        let results = db.search("sqlite").unwrap();
+        assert!(results.len() >= 2);
+        assert_eq!(results[0].name, "sqlite", "Name match should rank first");
+    }
+
+    #[test]
+    fn test_search_no_results() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("alice", "tool", vec![], 0)).unwrap();
+        let results = db.search("zzzznonexistent").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_seed_idempotent() {
+        let db = Database::open_in_memory().unwrap();
+        let first = db.seed_default_servers().unwrap();
+        assert!(first > 0);
+        let second = db.seed_default_servers().unwrap();
+        assert_eq!(second, 0, "Second seed should insert nothing");
     }
 }

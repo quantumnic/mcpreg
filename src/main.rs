@@ -24,9 +24,17 @@ enum Commands {
     Search {
         /// Search query
         query: String,
+        /// Output results as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Install an MCP server and add it to claude_desktop_config.json
     Install {
+        /// Server reference (owner/name)
+        server: String,
+    },
+    /// Uninstall an MCP server and remove it from claude_desktop_config.json
+    Uninstall {
         /// Server reference (owner/name)
         server: String,
     },
@@ -57,6 +65,14 @@ enum Commands {
     },
     /// Update all installed MCP servers
     Update,
+    /// Initialize a new mcpreg.toml manifest for your MCP server project
+    Init {
+        /// Directory to create mcpreg.toml in (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+    /// Show registry statistics (total servers, downloads, top servers)
+    Stats,
     /// Start the self-hosted registry server
     Serve {
         /// Bind address (default: 0.0.0.0:3000)
@@ -75,15 +91,20 @@ async fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Search { query } => commands::search::run(&query).await,
+        Commands::Search { query, json } => commands::search::run(&query, json).await,
         Commands::Install { server } => commands::install::run(&server).await,
+        Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
         Commands::List => commands::list::run(),
         Commands::Info { server } => commands::info::run(&server).await,
-        Commands::Browse { page, per_page, category } => {
-            commands::browse::run(page, per_page, category.as_deref())
-        }
+        Commands::Browse {
+            page,
+            per_page,
+            category,
+        } => commands::browse::run(page, per_page, category.as_deref()),
         Commands::Update => run_update().await,
+        Commands::Init { path } => commands::init::run(path.as_deref()),
+        Commands::Stats => commands::stats::run(),
         Commands::Serve { bind, db } => {
             let db_path = match db {
                 Some(p) => p,
@@ -129,12 +150,14 @@ async fn run_update() -> error::Result<()> {
                         server.owner, server.name, server.version, entry.version
                     );
                     updated += 1;
-                    // Re-install to update
                     if let Err(e) = commands::install::run(&server.full_name()).await {
                         eprintln!("    Failed to update: {e}");
                     }
                 } else {
-                    println!("  ✓ {}/{} is up to date (v{})", server.owner, server.name, server.version);
+                    println!(
+                        "  ✓ {}/{} is up to date (v{})",
+                        server.owner, server.name, server.version
+                    );
                 }
             }
             Err(e) => {
