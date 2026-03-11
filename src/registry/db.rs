@@ -162,24 +162,34 @@ impl Database {
 
         let where_clause = conditions.join(" AND ");
 
-        // Relevance scoring uses only the first term for simplicity
-        let first_pattern = format!("%{}%", terms[0]);
-        param_values.push(first_pattern);
-        let score_idx = param_values.len();
+        // Relevance scoring: accumulate score across ALL terms for better multi-word ranking
+        let mut score_parts = Vec::new();
+        for term in &terms {
+            let exact_name = term.to_string();
+            let pattern = format!("%{term}%");
+            let idx_exact = param_values.len() + 1;
+            param_values.push(exact_name);
+            let idx_like = param_values.len() + 1;
+            param_values.push(pattern);
+            score_parts.push(format!(
+                "(CASE WHEN name = ?{idx_exact} THEN 200 ELSE 0 END \
+                 + CASE WHEN name LIKE ?{idx_like} THEN 100 ELSE 0 END \
+                 + CASE WHEN owner LIKE ?{idx_like} THEN 50 ELSE 0 END \
+                 + CASE WHEN tools LIKE ?{idx_like} THEN 40 ELSE 0 END \
+                 + CASE WHEN category LIKE ?{idx_like} THEN 20 ELSE 0 END \
+                 + CASE WHEN description LIKE ?{idx_like} THEN 10 ELSE 0 END)"
+            ));
+        }
+        let score_expr = score_parts.join(" + ");
 
         let sql = format!(
             "SELECT id, owner, name, version, description, author, license, repository,
                     command, args, transport, tools, resources, prompts, category, downloads, created_at, updated_at,
-                    (CASE WHEN name LIKE ?{s} THEN 100 ELSE 0 END
-                     + CASE WHEN owner LIKE ?{s} THEN 50 ELSE 0 END
-                     + CASE WHEN tools LIKE ?{s} THEN 30 ELSE 0 END
-                     + CASE WHEN description LIKE ?{s} THEN 10 ELSE 0 END
-                     + downloads / 100) AS relevance
+                    ({score_expr} + downloads / 100) AS relevance
              FROM servers
              WHERE {where_clause}
              ORDER BY relevance DESC, downloads DESC
              LIMIT 50",
-            s = score_idx,
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
@@ -287,6 +297,33 @@ impl Database {
             |row| row.get(0),
         )?;
         Ok(count)
+    }
+
+    /// List all unique tool names with their server counts.
+    pub fn list_tools(&self) -> Result<Vec<(String, Vec<String>)>> {
+        let mut stmt = self.conn.prepare("SELECT owner, name, tools FROM servers")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+
+        let mut tool_map: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            let (owner, name, tools_json) = row?;
+            let tools: Vec<String> = serde_json::from_str(&tools_json).unwrap_or_default();
+            let full_name = format!("{owner}/{name}");
+            for tool in tools {
+                tool_map.entry(tool).or_default().push(full_name.clone());
+            }
+        }
+
+        let mut result: Vec<(String, Vec<String>)> = tool_map.into_iter().collect();
+        result.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        Ok(result)
     }
 
     /// List all distinct categories with counts.
@@ -942,6 +979,64 @@ mod search_tests {
         db.upsert_server(&make_entry("org", "filesystem", vec![], 0)).unwrap();
         let results = db.search("Files").unwrap();
         assert!(!results.is_empty(), "Category column should be searchable");
+    }
+}
+
+#[cfg(test)]
+mod tools_index_tests {
+    use super::*;
+
+    #[test]
+    fn test_list_tools_empty_db() {
+        let db = Database::open_in_memory().unwrap();
+        let tools = db.list_tools().unwrap();
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_list_tools_with_data() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let tools = db.list_tools().unwrap();
+        assert!(tools.len() > 10, "Expected many unique tools, got {}", tools.len());
+        // Most popular tools should appear in multiple servers
+        let (top_tool, top_servers) = &tools[0];
+        assert!(!top_tool.is_empty());
+        assert!(!top_servers.is_empty());
+    }
+
+    #[test]
+    fn test_list_tools_sorted_by_server_count() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let tools = db.list_tools().unwrap();
+        for i in 1..tools.len() {
+            assert!(
+                tools[i - 1].1.len() >= tools[i].1.len(),
+                "Expected sorted by server count desc"
+            );
+        }
+    }
+
+    #[test]
+    fn test_list_tools_no_duplicates() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let tools = db.list_tools().unwrap();
+        let names: std::collections::HashSet<&str> = tools.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names.len(), tools.len(), "Tool names should be unique");
+    }
+
+    #[test]
+    fn test_list_tools_shared_tool_has_multiple_servers() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let tools = db.list_tools().unwrap();
+        // "read_file" appears in both filesystem and gdrive
+        let read_file = tools.iter().find(|(t, _)| t == "read_file");
+        assert!(read_file.is_some(), "read_file tool should exist");
+        let servers = &read_file.unwrap().1;
+        assert!(servers.len() >= 2, "read_file should be in multiple servers");
     }
 }
 

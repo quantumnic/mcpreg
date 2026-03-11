@@ -1,4 +1,5 @@
 pub mod browse;
+pub mod compare;
 pub mod config_cmd;
 pub mod doctor;
 pub mod export;

@@ -51,6 +51,7 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/servers", axum::routing::get(routes::list_servers))
         .route("/api/v1/publish", axum::routing::post(routes::publish))
         .route("/api/v1/stats", axum::routing::get(routes::stats))
+        .route("/api/v1/tools", axum::routing::get(routes::tools_index))
         .route("/api/v1/categories", axum::routing::get(routes::categories))
         .layer(CorsLayer::permissive())
         .with_state(db_state)
@@ -414,6 +415,95 @@ mod new_endpoint_tests {
 }
 
 #[cfg(test)]
+mod tools_endpoint_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_tools_index() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/tools")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().unwrap() > 10, "Should have many tools");
+        let tools = result["tools"].as_array().unwrap();
+        assert!(!tools.is_empty());
+        // Each tool should have name, server_count, servers
+        let first = &tools[0];
+        assert!(first["tool"].is_string());
+        assert!(first["server_count"].as_u64().unwrap() > 0);
+        assert!(first["servers"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_api_tools_with_query_filter() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/tools?q=read_file")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().unwrap() >= 1);
+        for tool in result["tools"].as_array().unwrap() {
+            assert!(tool["tool"].as_str().unwrap().to_lowercase().contains("read_file"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_tools_with_limit() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/tools?limit=3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["tools"].as_array().unwrap().len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_api_tools_sorted_by_popularity() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/tools")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        // First tool should have more (or equal) servers than the last
+        if tools.len() >= 2 {
+            let first_count = tools[0]["server_count"].as_u64().unwrap();
+            let last_count = tools.last().unwrap()["server_count"].as_u64().unwrap();
+            assert!(first_count >= last_count, "Tools should be sorted by popularity");
+        }
+    }
+}
+
+#[cfg(test)]
 mod improvement_tests {
     use super::*;
     use crate::api::types::ServerEntry;
@@ -699,6 +789,28 @@ mod improvement_tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_search_with_tool_filter() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&tool=read_file")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(search.total >= 2, "Multiple servers have read_file tool");
+        for s in &search.servers {
+            assert!(
+                s.tools.iter().any(|t| t.to_lowercase().contains("read_file")),
+                "Server {} should have read_file tool",
+                s.full_name()
+            );
+        }
     }
 
     #[tokio::test]

@@ -17,6 +17,7 @@ pub struct SearchQuery {
     pub sort: Option<String>,
     pub limit: Option<usize>,
     pub min_downloads: Option<i64>,
+    pub tool: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -45,6 +46,14 @@ pub async fn search(
     // Server-side min_downloads filter
     if let Some(min) = params.min_downloads {
         servers.retain(|s| s.downloads >= min);
+    }
+
+    // Server-side tool filter
+    if let Some(ref tool) = params.tool {
+        let tool_lower = tool.to_lowercase();
+        servers.retain(|s| {
+            s.tools.iter().any(|t| t.to_lowercase().contains(&tool_lower))
+        });
     }
 
     // Server-side sorting
@@ -250,6 +259,52 @@ pub async fn categories(
         "total": total,
         "page": page,
     })))
+}
+
+/// GET /api/v1/tools — list all unique tools across the registry
+pub async fn tools_index(
+    State(db): State<DbState>,
+    Query(params): Query<ToolsQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let all_tools = db.list_tools()?;
+
+    let mut items: Vec<serde_json::Value> = all_tools
+        .into_iter()
+        .map(|(tool, servers)| {
+            serde_json::json!({
+                "tool": tool,
+                "server_count": servers.len(),
+                "servers": servers,
+            })
+        })
+        .collect();
+
+    // Optional name filter
+    if let Some(ref q) = params.q {
+        let q_lower = q.to_lowercase();
+        items.retain(|item| {
+            item["tool"]
+                .as_str()
+                .map(|t| t.to_lowercase().contains(&q_lower))
+                .unwrap_or(false)
+        });
+    }
+
+    let total = items.len();
+    let limit = params.limit.unwrap_or(100).min(500);
+    items.truncate(limit);
+
+    Ok(Json(serde_json::json!({
+        "tools": items,
+        "total": total,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct ToolsQuery {
+    pub q: Option<String>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
