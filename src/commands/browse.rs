@@ -5,7 +5,7 @@ use crate::registry::seed::server_category;
 use crate::SortOrder;
 use std::collections::BTreeMap;
 
-pub fn run(page: usize, per_page: usize, category: Option<&str>, sort: &SortOrder) -> Result<()> {
+pub fn run(page: usize, per_page: usize, category: Option<&str>, sort: &SortOrder, min_downloads: Option<i64>) -> Result<()> {
     let db_path = Config::db_path()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "registry.db".to_string());
@@ -24,6 +24,11 @@ pub fn run(page: usize, per_page: usize, category: Option<&str>, sort: &SortOrde
     if total == 0 {
         println!("No servers in registry.");
         return Ok(());
+    }
+
+    // Apply min_downloads filter
+    if let Some(min) = min_downloads {
+        all_servers.retain(|s| s.downloads >= min);
     }
 
     // Apply sort
@@ -111,6 +116,6 @@ mod tests {
 
     #[test]
     fn test_browse_runs_without_error() {
-        let _ = run(1, 10, None, &SortOrder::Downloads);
+        let _ = run(1, 10, None, &SortOrder::Downloads, None);
     }
 }

@@ -752,6 +752,53 @@ mod search_tests {
     }
 
     #[test]
+    fn test_search_special_chars() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("org", "server-with-dash", vec![], 0)).unwrap();
+        let results = db.search("server-with-dash").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_sql_injection_safe() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("a", "s1", vec![], 0)).unwrap();
+        // Attempt SQL injection - should not crash or return unexpected results
+        let results = db.search("'; DROP TABLE servers; --").unwrap();
+        assert!(results.is_empty());
+        // Table should still exist
+        let results = db.search("s1").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_percent_char() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("a", "s1", vec![], 0)).unwrap();
+        // '%' is special in LIKE patterns
+        let results = db.search("%").unwrap();
+        // Should match all since % in LIKE matches everything
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_list_servers_page_beyond_total() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("a", "s1", vec![], 0)).unwrap();
+        let (servers, total) = db.list_servers(999, 10).unwrap();
+        assert_eq!(total, 1);
+        assert!(servers.is_empty());
+    }
+
+    #[test]
+    fn test_list_servers_page_zero_treated_as_one() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("a", "s1", vec![], 0)).unwrap();
+        let (servers, _) = db.list_servers(0, 10).unwrap();
+        assert_eq!(servers.len(), 1);
+    }
+
+    #[test]
     fn test_search_category_column() {
         let db = Database::open_in_memory().unwrap();
         // "filesystem" should get categorized as Files & VCS

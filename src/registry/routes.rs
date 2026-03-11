@@ -16,6 +16,7 @@ pub struct SearchQuery {
     pub category: Option<String>,
     pub sort: Option<String>,
     pub limit: Option<usize>,
+    pub min_downloads: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -39,6 +40,11 @@ pub async fn search(
             let server_cat = crate::registry::seed::server_category(&s.owner, &s.name).to_lowercase();
             server_cat.contains(&cat_lower)
         });
+    }
+
+    // Server-side min_downloads filter
+    if let Some(min) = params.min_downloads {
+        servers.retain(|s| s.downloads >= min);
     }
 
     // Server-side sorting
@@ -145,6 +151,22 @@ pub async fn list_servers(
         per_page,
         total,
     }))
+}
+
+/// POST /api/v1/servers/:owner/:name/download — track a download without fetching full info
+pub async fn track_download(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    if db.increment_downloads(&owner, &name)? {
+        Ok(Json(serde_json::json!({
+            "success": true,
+            "message": format!("Download tracked for {owner}/{name}")
+        })))
+    } else {
+        Err(McpRegError::NotFound(format!("{owner}/{name}")))
+    }
 }
 
 pub async fn health() -> &'static str {

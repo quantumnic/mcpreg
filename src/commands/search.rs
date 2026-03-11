@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::registry::db::Database;
 use crate::SortOrder;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     query: &str,
     json_output: bool,
@@ -12,6 +13,7 @@ pub async fn run(
     limit: Option<usize>,
     compact: bool,
     offline: bool,
+    min_downloads: Option<i64>,
 ) -> Result<()> {
     let mut servers = if offline {
         // Search local database directly
@@ -54,6 +56,11 @@ pub async fn run(
         });
     }
 
+    // Min downloads filter
+    if let Some(min) = min_downloads {
+        servers.retain(|s| s.downloads >= min);
+    }
+
     // Client-side sorting
     match sort {
         SortOrder::Name => {
@@ -86,6 +93,12 @@ pub async fn run(
         if let Some(cat) = category {
             println!("  (filtered by category '{cat}')");
         }
+
+        // Fuzzy suggestions
+        if !query.is_empty() {
+            suggest_similar(query, offline).await;
+        }
+
         return Ok(());
     }
 
@@ -130,4 +143,39 @@ pub async fn run(
         }
     }
     Ok(())
+}
+
+/// Show fuzzy suggestions when search returns no results.
+async fn suggest_similar(query: &str, offline: bool) {
+    let all_names = if offline {
+        let db_path = Config::db_path()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "registry.db".to_string());
+        match Database::open(&db_path) {
+            Ok(db) => {
+                let (servers, _) = db.list_servers(1, 1000).unwrap_or_default();
+                servers.iter().map(|s| s.full_name()).collect::<Vec<_>>()
+            }
+            Err(_) => return,
+        }
+    } else {
+        // For remote, try to fetch all
+        let config = match Config::load() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let client = RegistryClient::new(&config);
+        match client.search("").await {
+            Ok(resp) => resp.servers.iter().map(|s| s.full_name()).collect(),
+            Err(_) => return,
+        }
+    };
+
+    let suggestions = crate::fuzzy::suggest(query, &all_names, 3);
+    if !suggestions.is_empty() {
+        println!("\n  Did you mean?");
+        for (name, _) in &suggestions {
+            println!("    • {name}");
+        }
+    }
 }

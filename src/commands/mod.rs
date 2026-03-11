@@ -9,5 +9,6 @@ pub mod list;
 pub mod publish;
 pub mod search;
 pub mod stats;
+pub mod tags;
 pub mod uninstall;
 pub mod validate;

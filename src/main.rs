@@ -2,6 +2,7 @@ mod api;
 mod commands;
 mod config;
 mod error;
+mod fuzzy;
 mod registry;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -53,6 +54,9 @@ enum Commands {
         /// Search the local database instead of the remote registry
         #[arg(long)]
         offline: bool,
+        /// Only show servers with at least this many downloads
+        #[arg(long)]
+        min_downloads: Option<i64>,
     },
     /// Install an MCP server and add it to claude_desktop_config.json
     Install {
@@ -98,6 +102,15 @@ enum Commands {
         /// Sort order: downloads (default), name, updated
         #[arg(short, long, value_enum, default_value_t = SortOrder::Downloads)]
         sort: SortOrder,
+        /// Only show servers with at least this many downloads
+        #[arg(long)]
+        min_downloads: Option<i64>,
+    },
+    /// List all categories with server counts
+    Tags {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Export installed servers as a claude_desktop_config.json snippet
     Export {
@@ -166,7 +179,8 @@ async fn main() {
             limit,
             compact,
             offline,
-        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline).await,
+            min_downloads,
+        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, min_downloads).await,
         Commands::Install { server } => commands::install::run(&server).await,
         Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
@@ -177,7 +191,9 @@ async fn main() {
             per_page,
             category,
             sort,
-        } => commands::browse::run(page, per_page, category.as_deref(), &sort),
+            min_downloads,
+        } => commands::browse::run(page, per_page, category.as_deref(), &sort, min_downloads),
+        Commands::Tags { json } => commands::tags::run(json),
         Commands::Export { output } => commands::export::run(output.as_deref()),
         Commands::Update => run_update().await,
         Commands::Init { path } => commands::init::run(path.as_deref()),

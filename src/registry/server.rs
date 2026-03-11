@@ -40,6 +40,10 @@ pub fn build_router(db_state: DbState) -> Router {
             axum::routing::get(routes::get_server)
                 .delete(routes::delete_server),
         )
+        .route(
+            "/api/v1/servers/:owner/:name/download",
+            axum::routing::post(routes::track_download),
+        )
         .route("/api/v1/servers", axum::routing::get(routes::list_servers))
         .route("/api/v1/publish", axum::routing::post(routes::publish))
         .route("/api/v1/stats", axum::routing::get(routes::stats))
@@ -604,6 +608,65 @@ mod improvement_tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_search_with_min_downloads() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&min_downloads=30000")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(search.total > 0);
+        for s in &search.servers {
+            assert!(s.downloads >= 30000, "Expected >=30000, got {}", s.downloads);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_download_tracking_endpoint() {
+        let app = seeded_app().await;
+        // First get the current download count
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let before: ServerEntry = serde_json::from_slice(&body).unwrap();
+
+        // Track a download
+        let app2 = seeded_app().await; // fresh app since oneshot consumes
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/download")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app2.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["success"].as_bool().unwrap());
+
+        // Note: can't verify count increased because seeded_app creates separate DBs
+        let _ = before; // used above for reference
+    }
+
+    #[tokio::test]
+    async fn test_download_tracking_not_found() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/servers/nobody/nothing/download")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
