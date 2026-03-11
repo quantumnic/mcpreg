@@ -252,6 +252,40 @@ pub async fn categories(
     })))
 }
 
+#[derive(Deserialize)]
+pub struct SimilarQuery {
+    pub limit: Option<usize>,
+}
+
+/// GET /api/v1/servers/:owner/:name/similar — find similar servers
+pub async fn similar_servers(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+    Query(params): Query<SimilarQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let limit = params.limit.unwrap_or(5).min(20);
+    let db = db.lock().await;
+    let similar = db.find_similar(&owner, &name, limit)?;
+    let servers: Vec<serde_json::Value> = similar
+        .iter()
+        .map(|(entry, score)| {
+            serde_json::json!({
+                "owner": entry.owner,
+                "name": entry.name,
+                "full_name": entry.full_name(),
+                "description": entry.description,
+                "similarity_score": format!("{:.2}", score),
+                "downloads": entry.downloads,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "query": format!("{owner}/{name}"),
+        "similar": servers,
+        "total": servers.len(),
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

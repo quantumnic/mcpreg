@@ -57,6 +57,9 @@ enum Commands {
         /// Only show servers with at least this many downloads
         #[arg(long)]
         min_downloads: Option<i64>,
+        /// Filter by tool name (only show servers that expose this tool)
+        #[arg(short = 't', long)]
+        tool: Option<String>,
     },
     /// Install an MCP server and add it to claude_desktop_config.json
     Install {
@@ -141,6 +144,23 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Find servers similar to a given server (by tools, category, description)
+    Similar {
+        /// Server reference (owner/name)
+        server: String,
+        /// Maximum number of results (default: 5)
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show which installed servers have newer versions available
+    Outdated {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// View or update mcpreg configuration
     Config {
         /// Action: show, get, set, path
@@ -180,7 +200,8 @@ async fn main() {
             compact,
             offline,
             min_downloads,
-        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, min_downloads).await,
+            tool,
+        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, min_downloads, tool.as_deref()).await,
         Commands::Install { server } => commands::install::run(&server).await,
         Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
@@ -195,6 +216,8 @@ async fn main() {
         } => commands::browse::run(page, per_page, category.as_deref(), &sort, min_downloads),
         Commands::Tags { json } => commands::tags::run(json),
         Commands::Export { output } => commands::export::run(output.as_deref()),
+        Commands::Similar { server, limit, json } => commands::similar::run(&server, limit, json),
+        Commands::Outdated { json } => commands::outdated::run(json),
         Commands::Update => run_update().await,
         Commands::Init { path } => commands::init::run(path.as_deref()),
         Commands::Validate { manifest, json } => {

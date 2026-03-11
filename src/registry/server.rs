@@ -44,6 +44,10 @@ pub fn build_router(db_state: DbState) -> Router {
             "/api/v1/servers/:owner/:name/download",
             axum::routing::post(routes::track_download),
         )
+        .route(
+            "/api/v1/servers/:owner/:name/similar",
+            axum::routing::get(routes::similar_servers),
+        )
         .route("/api/v1/servers", axum::routing::get(routes::list_servers))
         .route("/api/v1/publish", axum::routing::post(routes::publish))
         .route("/api/v1/stats", axum::routing::get(routes::stats))
@@ -663,6 +667,34 @@ mod improvement_tests {
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/servers/nobody/nothing/download")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_api_similar_servers() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/postgres/similar?limit=3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().unwrap() > 0);
+        assert!(result["similar"].as_array().unwrap().len() <= 3);
+        assert_eq!(result["query"], "modelcontextprotocol/postgres");
+    }
+
+    #[tokio::test]
+    async fn test_api_similar_not_found() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/nobody/nothing/similar")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

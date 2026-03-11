@@ -571,6 +571,143 @@ mod tests {
     }
 }
 
+impl Database {
+    /// Find servers similar to the given one based on shared tools, category, and description overlap.
+    /// Returns servers sorted by similarity score (0.0–1.0), excluding the queried server itself.
+    pub fn find_similar(&self, owner: &str, name: &str, limit: usize) -> Result<Vec<(ServerEntry, f64)>> {
+        let target = match self.get_server(owner, name)? {
+            Some(entry) => entry,
+            None => return Err(crate::error::McpRegError::NotFound(format!("{owner}/{name}"))),
+        };
+
+        let target_cat = crate::registry::seed::server_category(&target.owner, &target.name);
+        let target_tools: std::collections::HashSet<&str> = target.tools.iter().map(|s| s.as_str()).collect();
+        let target_words: std::collections::HashSet<String> = target
+            .description
+            .to_lowercase()
+            .split_whitespace()
+            .filter(|w| w.len() > 3)
+            .map(String::from)
+            .collect();
+
+        let (all_servers, _) = self.list_servers(1, 1000)?;
+
+        let mut scored: Vec<(ServerEntry, f64)> = all_servers
+            .into_iter()
+            .filter(|s| !(s.owner == owner && s.name == name))
+            .filter_map(|s| {
+                let mut score = 0.0f64;
+
+                // Tool overlap (Jaccard similarity, weighted heavily)
+                let s_tools: std::collections::HashSet<&str> = s.tools.iter().map(|t| t.as_str()).collect();
+                let intersection = target_tools.intersection(&s_tools).count();
+                let union = target_tools.union(&s_tools).count();
+                if union > 0 {
+                    score += 0.5 * (intersection as f64 / union as f64);
+                }
+
+                // Same category bonus
+                let s_cat = crate::registry::seed::server_category(&s.owner, &s.name);
+                if s_cat == target_cat {
+                    score += 0.3;
+                }
+
+                // Description word overlap
+                let s_words: std::collections::HashSet<String> = s
+                    .description
+                    .to_lowercase()
+                    .split_whitespace()
+                    .filter(|w| w.len() > 3)
+                    .map(String::from)
+                    .collect();
+                let word_intersection = target_words.intersection(&s_words).count();
+                let word_union = target_words.union(&s_words).count();
+                if word_union > 0 {
+                    score += 0.2 * (word_intersection as f64 / word_union as f64);
+                }
+
+                if score > 0.05 {
+                    Some((s, score))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        Ok(scored)
+    }
+}
+
+#[cfg(test)]
+mod similar_tests {
+    use super::*;
+
+    #[test]
+    fn test_find_similar_returns_related() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+
+        let similar = db.find_similar("modelcontextprotocol", "filesystem", 5).unwrap();
+        assert!(!similar.is_empty(), "Should find similar servers to filesystem");
+        // Git server is in same category (Files & VCS)
+        let has_related = similar.iter().any(|(s, _)| {
+            let cat = crate::registry::seed::server_category(&s.owner, &s.name);
+            cat.contains("Files")
+        });
+        assert!(has_related, "Should find servers in same category");
+    }
+
+    #[test]
+    fn test_find_similar_excludes_self() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let similar = db.find_similar("modelcontextprotocol", "filesystem", 50).unwrap();
+        assert!(
+            !similar.iter().any(|(s, _)| s.owner == "modelcontextprotocol" && s.name == "filesystem"),
+            "Should not include the queried server itself"
+        );
+    }
+
+    #[test]
+    fn test_find_similar_not_found() {
+        let db = Database::open_in_memory().unwrap();
+        let result = db.find_similar("nobody", "nothing", 5);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_find_similar_scores_bounded() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let similar = db.find_similar("modelcontextprotocol", "postgres", 10).unwrap();
+        for (_, score) in &similar {
+            assert!(*score > 0.0 && *score <= 1.0, "Score should be in (0, 1], got {score}");
+        }
+    }
+
+    #[test]
+    fn test_find_similar_respects_limit() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let similar = db.find_similar("modelcontextprotocol", "github", 3).unwrap();
+        assert!(similar.len() <= 3);
+    }
+
+    #[test]
+    fn test_find_similar_database_servers_ranked() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let similar = db.find_similar("modelcontextprotocol", "postgres", 5).unwrap();
+        // SQLite and other DB servers should score highly
+        let has_db = similar.iter().any(|(s, _)| {
+            s.name.contains("sqlite") || s.name.contains("astra") || s.name.contains("neon") || s.name.contains("redis")
+        });
+        assert!(has_db, "Database servers should appear similar to postgres");
+    }
+}
+
 /// Registry statistics.
 pub struct RegistryStats {
     pub total_servers: usize,

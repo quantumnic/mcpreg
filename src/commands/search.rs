@@ -14,6 +14,7 @@ pub async fn run(
     compact: bool,
     offline: bool,
     min_downloads: Option<i64>,
+    tool_filter: Option<&str>,
 ) -> Result<()> {
     let mut servers = if offline {
         // Search local database directly
@@ -59,6 +60,14 @@ pub async fn run(
     // Min downloads filter
     if let Some(min) = min_downloads {
         servers.retain(|s| s.downloads >= min);
+    }
+
+    // Tool name filter
+    if let Some(tool) = tool_filter {
+        let tool_lower = tool.to_lowercase();
+        servers.retain(|s| {
+            s.tools.iter().any(|t| t.to_lowercase().contains(&tool_lower))
+        });
     }
 
     // Client-side sorting
