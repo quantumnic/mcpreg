@@ -223,6 +223,17 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show a server's current state and version history (local DB)
+    Diff {
+        /// Server reference (owner/name)
+        server: String,
+        /// Compare from this version
+        #[arg(long)]
+        from: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare two MCP servers side-by-side (tools, resources, prompts)
     Compare {
         /// First server reference (owner/name)
@@ -390,6 +401,9 @@ async fn main() {
             commands::validate::run(manifest.as_deref(), json)
         }
         Commands::Stats { json } => commands::stats::run(json),
+        Commands::Diff { server, from, json } => {
+            commands::diff::run(&server, from.as_deref(), json)
+        }
         Commands::Compare { server_a, server_b, json } => {
             commands::compare::run(&server_a, &server_b, json)
         }

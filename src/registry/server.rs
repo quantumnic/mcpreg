@@ -36,11 +36,6 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/version", axum::routing::get(routes::version))
         .route("/api/v1/search", axum::routing::get(routes::search))
         .route(
-            "/api/v1/servers/:owner/:name",
-            axum::routing::get(routes::get_server)
-                .delete(routes::delete_server),
-        )
-        .route(
             "/api/v1/servers/:owner/:name/download",
             axum::routing::post(routes::track_download),
         )
@@ -59,6 +54,13 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/servers", axum::routing::get(routes::list_servers))
         .route("/api/v1/servers/batch", axum::routing::post(routes::batch_get_servers))
         .route("/api/v1/publish", axum::routing::post(routes::publish))
+        .route("/api/v1/validate", axum::routing::post(routes::validate_entry))
+        .route(
+            "/api/v1/servers/:owner/:name",
+            axum::routing::get(routes::get_server)
+                .delete(routes::delete_server)
+                .patch(routes::patch_server),
+        )
         .route("/api/v1/stats", axum::routing::get(routes::stats))
         .route("/api/v1/tools", axum::routing::get(routes::tools_index))
         .route("/api/v1/categories", axum::routing::get(routes::categories))
@@ -92,6 +94,7 @@ mod tests {
             tools: vec!["read_file".into(), "write_file".into(), "list_directory".into()],
             resources: vec!["file://".into()],
             prompts: vec![],
+            tags: vec![],
             downloads: 1500,
             created_at: None,
             updated_at: None,
@@ -231,6 +234,7 @@ mod tests {
             tools: vec!["query".into()],
             resources: vec![],
             prompts: vec![],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -263,6 +267,7 @@ mod tests {
             tools: vec![],
             resources: vec![],
             prompts: vec![],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -621,6 +626,7 @@ mod improvement_tests {
             tools: vec![],
             resources: vec![],
             prompts: vec![],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -653,6 +659,7 @@ mod improvement_tests {
             tools: vec![],
             resources: vec![],
             prompts: vec![],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -685,6 +692,7 @@ mod improvement_tests {
             tools: vec![],
             resources: vec![],
             prompts: vec![],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -717,6 +725,7 @@ mod improvement_tests {
             tools: vec!["tool1".into()],
             resources: vec![],
             prompts: vec!["summarize".into(), "analyze".into()],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -919,6 +928,7 @@ mod improvement_tests {
             tools: vec![],
             resources: vec![],
             prompts: vec![],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1006,6 +1016,7 @@ mod diff_endpoint_tests {
             tools: vec!["read".into()],
             resources: vec![],
             prompts: vec![],
+            tags: vec![],
             downloads: 100,
             created_at: None,
             updated_at: None,
@@ -1170,5 +1181,365 @@ mod filter_tests {
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(search.total, 0);
+    }
+}
+
+#[cfg(test)]
+mod validate_and_patch_tests {
+    use axum::http::StatusCode;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    use crate::api::types::ServerEntry;
+
+
+    fn test_app() -> axum::Router {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let db_state = std::sync::Arc::new(tokio::sync::Mutex::new(db));
+        super::build_router(db_state)
+    }
+
+    fn test_entry() -> ServerEntry {
+        ServerEntry {
+            id: None,
+            owner: "testuser".into(),
+            name: "test-server".into(),
+            version: "1.0.0".into(),
+            description: "Test server".into(),
+            author: "testuser".into(),
+            license: "MIT".into(),
+            repository: "https://github.com/test/repo".into(),
+            command: "node".into(),
+            args: vec!["index.js".into()],
+            transport: "stdio".into(),
+            tools: vec!["tool1".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_valid_entry() {
+        let app = test_app();
+        let entry = test_entry();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/validate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&entry).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["valid"], true);
+        assert!(body["errors"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_validate_missing_fields() {
+        let app = test_app();
+        let entry = ServerEntry {
+            id: None,
+            owner: "".into(),
+            name: "".into(),
+            version: "bad".into(),
+            description: "".into(),
+            author: "".into(),
+            license: "".into(),
+            repository: "".into(),
+            command: "".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/validate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&entry).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["valid"], false);
+        let errors = body["errors"].as_array().unwrap();
+        assert!(errors.len() >= 3); // owner, name, command, version
+    }
+
+    #[tokio::test]
+    async fn test_validate_warnings() {
+        let app = test_app();
+        let entry = ServerEntry {
+            id: None,
+            owner: "user".into(),
+            name: "tool".into(),
+            version: "1.0.0".into(),
+            description: "".into(), // triggers warning
+            author: "".into(),       // triggers warning
+            license: "".into(),      // triggers warning
+            repository: "".into(),   // triggers warning
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],           // triggers warning
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/validate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&entry).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["valid"], true);
+        let warnings = body["warnings"].as_array().unwrap();
+        assert!(warnings.len() >= 4);
+    }
+
+    #[tokio::test]
+    async fn test_patch_server() {
+        let app = test_app();
+
+        // First publish
+        let entry = test_entry();
+        let resp = app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/publish")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&entry).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Patch description and tags
+        let patch = serde_json::json!({
+            "description": "Updated description",
+            "tags": ["ai", "productivity"],
+        });
+        let resp = app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/servers/testuser/test-server")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&patch).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["success"], true);
+        let fields = body["updated_fields"].as_array().unwrap();
+        assert!(fields.iter().any(|f| f == "description"));
+        assert!(fields.iter().any(|f| f == "tags"));
+
+        // Verify the changes persisted
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/servers/testuser/test-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["description"], "Updated description");
+        assert_eq!(body["tags"], serde_json::json!(["ai", "productivity"]));
+    }
+
+    #[tokio::test]
+    async fn test_patch_nonexistent() {
+        let app = test_app();
+        let patch = serde_json::json!({"description": "test"});
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/servers/nobody/nothing")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&patch).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_patch_empty_body() {
+        let app = test_app();
+        // Publish first
+        let entry = test_entry();
+        let _ = app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/publish")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&entry).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let patch = serde_json::json!({}); // no valid fields
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/servers/testuser/test-server")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&patch).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_patch_invalid_transport() {
+        let app = test_app();
+        let entry = test_entry();
+        let _ = app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/publish")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&entry).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let patch = serde_json::json!({"transport": "invalid-proto"});
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/servers/testuser/test-server")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&patch).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[cfg(test)]
+mod search_suggestions_tests {
+    use axum::http::StatusCode;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    use crate::api::types::ServerEntry;
+
+
+    fn test_app() -> axum::Router {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let db_state = std::sync::Arc::new(tokio::sync::Mutex::new(db));
+        super::build_router(db_state)
+    }
+
+
+    #[tokio::test]
+    async fn test_search_returns_suggestions_on_typo() {
+        let app = test_app();
+
+        // Publish a server
+        let entry = ServerEntry {
+            id: None,
+            owner: "org".into(),
+            name: "filesystem".into(),
+            version: "1.0.0".into(),
+            description: "File system access".into(),
+            author: "org".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        let _ = app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/publish")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&entry).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Search with a typo
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/search?q=filesytem")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["total"], 0);
+        // Should have suggestions
+        let suggestions = body["suggestions"].as_array();
+        assert!(suggestions.is_some(), "Should have suggestions for typo");
+        assert!(!suggestions.unwrap().is_empty());
     }
 }

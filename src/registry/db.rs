@@ -40,6 +40,7 @@ impl Database {
                 tools TEXT NOT NULL DEFAULT '[]',
                 resources TEXT NOT NULL DEFAULT '[]',
                 prompts TEXT NOT NULL DEFAULT '[]',
+                tags TEXT NOT NULL DEFAULT '[]',
                 category TEXT NOT NULL DEFAULT '',
                 downloads INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -99,6 +100,17 @@ impl Database {
             self.conn.execute_batch("ALTER TABLE servers ADD COLUMN prompts TEXT NOT NULL DEFAULT '[]'")?;
         }
 
+        // Add tags column if missing
+        let has_tags: bool = self.conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name='tags'")?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !has_tags {
+            self.conn.execute_batch("ALTER TABLE servers ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")?;
+        }
+
         // Create server_versions table if missing (for databases created before this version)
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS server_versions (
@@ -120,11 +132,12 @@ impl Database {
         let tools_json = serde_json::to_string(&entry.tools)?;
         let resources_json = serde_json::to_string(&entry.resources)?;
         let prompts_json = serde_json::to_string(&entry.prompts)?;
+        let tags_json = serde_json::to_string(&entry.tags)?;
         let category = crate::registry::seed::server_category(&entry.owner, &entry.name);
 
         self.conn.execute(
-            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources, prompts, category, downloads)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources, prompts, tags, category, downloads)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(owner, name) DO UPDATE SET
                 version = excluded.version,
                 description = excluded.description,
@@ -137,6 +150,7 @@ impl Database {
                 tools = excluded.tools,
                 resources = excluded.resources,
                 prompts = excluded.prompts,
+                tags = excluded.tags,
                 category = excluded.category,
                 updated_at = datetime('now')",
             params![
@@ -153,6 +167,7 @@ impl Database {
                 tools_json,
                 resources_json,
                 prompts_json,
+                tags_json,
                 category,
                 entry.downloads,
             ],
@@ -203,7 +218,7 @@ impl Database {
             let idx = param_values.len();
             param_values.push(pattern);
             conditions.push(format!(
-                "(name LIKE ?{p} ESCAPE '\\' OR description LIKE ?{p} ESCAPE '\\' OR owner LIKE ?{p} ESCAPE '\\' OR tools LIKE ?{p} ESCAPE '\\' OR author LIKE ?{p} ESCAPE '\\' OR category LIKE ?{p} ESCAPE '\\')",
+                "(name LIKE ?{p} ESCAPE '\\' OR description LIKE ?{p} ESCAPE '\\' OR owner LIKE ?{p} ESCAPE '\\' OR tools LIKE ?{p} ESCAPE '\\' OR author LIKE ?{p} ESCAPE '\\' OR category LIKE ?{p} ESCAPE '\\' OR tags LIKE ?{p} ESCAPE '\\')",
                 p = idx + 1
             ));
         }
@@ -226,6 +241,7 @@ impl Database {
                  + CASE WHEN owner LIKE ?{idx_like} ESCAPE '\\' THEN 50 ELSE 0 END \
                  + CASE WHEN tools LIKE ?{idx_like} ESCAPE '\\' THEN 40 ELSE 0 END \
                  + CASE WHEN category LIKE ?{idx_like} ESCAPE '\\' THEN 20 ELSE 0 END \
+                 + CASE WHEN tags LIKE ?{idx_like} ESCAPE '\\' THEN 15 ELSE 0 END \
                  + CASE WHEN description LIKE ?{idx_like} ESCAPE '\\' THEN 10 ELSE 0 END)"
             ));
         }
@@ -233,7 +249,7 @@ impl Database {
 
         let sql = format!(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, category, downloads, created_at, updated_at,
+                    command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at,
                     ({score_expr} + downloads / 100) AS relevance
              FROM servers
              WHERE {where_clause}
@@ -263,7 +279,7 @@ impl Database {
         let pattern = format!("%{escaped}%");
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
              FROM servers WHERE category LIKE ?1 ORDER BY downloads DESC",
         )?;
         let rows = stmt.query_map(params![pattern], row_mapper)?;
@@ -277,7 +293,7 @@ impl Database {
     pub fn get_server(&self, owner: &str, name: &str) -> Result<Option<ServerEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
              FROM servers WHERE owner = ?1 AND name = ?2",
         )?;
         let mut rows = stmt.query_map(params![owner, name], row_mapper)?;
@@ -304,7 +320,7 @@ impl Database {
 
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
              FROM servers ORDER BY downloads DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(params![per_page as i64, offset as i64], row_mapper)?;
@@ -445,10 +461,11 @@ fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<ServerEntryRow> {
         tools: row.get::<_, String>(11)?,
         resources: row.get::<_, String>(12)?,
         prompts: row.get::<_, String>(13)?,
-        category: row.get(14)?,
-        downloads: row.get(15)?,
-        created_at: row.get(16)?,
-        updated_at: row.get(17)?,
+        tags: row.get::<_, String>(14)?,
+        category: row.get(15)?,
+        downloads: row.get(16)?,
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
     })
 }
 
@@ -467,6 +484,7 @@ struct ServerEntryRow {
     tools: String,
     resources: String,
     prompts: String,
+    tags: String,
     #[allow(dead_code)]
     category: String,
     downloads: i64,
@@ -491,6 +509,7 @@ impl ServerEntryRow {
             tools: serde_json::from_str(&self.tools).unwrap_or_default(),
             resources: serde_json::from_str(&self.resources).unwrap_or_default(),
             prompts: serde_json::from_str(&self.prompts).unwrap_or_default(),
+            tags: serde_json::from_str(&self.tags).unwrap_or_default(),
             downloads: self.downloads,
             created_at: Some(self.created_at),
             updated_at: Some(self.updated_at),
@@ -518,6 +537,7 @@ mod tests {
             tools: vec!["read_file".into()],
             resources: vec!["file://".into()],
             prompts: vec![],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -979,6 +999,7 @@ mod search_tests {
             tools: tools.into_iter().map(String::from).collect(),
             resources: vec![],
             prompts: vec![],
+            tags: vec![],
             downloads,
             created_at: None,
             updated_at: None,
@@ -1183,6 +1204,7 @@ mod tools_index_tests {
             tools: vec![],
             resources: vec![],
             prompts: vec!["summarize".into(), "analyze".into()],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1245,6 +1267,7 @@ mod prompts_tests {
             tools: vec!["tool1".into()],
             resources: vec![],
             prompts: vec!["summarize".into(), "analyze".into(), "translate".into()],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1272,6 +1295,7 @@ mod prompts_tests {
             tools: vec![],
             resources: vec![],
             prompts: vec![],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1299,6 +1323,7 @@ mod prompts_tests {
             tools: vec![],
             resources: vec![],
             prompts: vec!["prompt1".into()],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1313,5 +1338,86 @@ mod prompts_tests {
         let retrieved = db.get_server("carol", "evolving").unwrap().unwrap();
         assert_eq!(retrieved.version, "2.0.0");
         assert_eq!(retrieved.prompts.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod tags_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+
+    fn test_entry(owner: &str, name: &str) -> ServerEntry {
+        ServerEntry {
+            id: None,
+            owner: owner.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: "A test MCP server".into(),
+            author: owner.into(),
+            license: "MIT".into(),
+            repository: format!("https://github.com/{owner}/{name}"),
+            command: "node".into(),
+            args: vec!["dist/index.js".into()],
+            transport: "stdio".into(),
+            tools: vec!["read_file".into()],
+            resources: vec!["file://".into()],
+            prompts: vec![],
+            tags: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_db_search_by_tags() {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = test_entry("alice", "my-tool");
+        entry.tags = vec!["llm".into(), "code-review".into()];
+        db.upsert_server(&entry).unwrap();
+
+        let results = db.search("llm").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "my-tool");
+
+        let results = db.search("code-review").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_db_tags_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = test_entry("alice", "tagged");
+        entry.tags = vec!["ai".into(), "productivity".into(), "automation".into()];
+        db.upsert_server(&entry).unwrap();
+
+        let server = db.get_server("alice", "tagged").unwrap().unwrap();
+        assert_eq!(server.tags, vec!["ai", "productivity", "automation"]);
+    }
+
+    #[test]
+    fn test_db_tags_default_empty() {
+        let db = Database::open_in_memory().unwrap();
+        let entry = test_entry("bob", "no-tags");
+        db.upsert_server(&entry).unwrap();
+
+        let server = db.get_server("bob", "no-tags").unwrap().unwrap();
+        assert!(server.tags.is_empty());
+    }
+
+    #[test]
+    fn test_db_search_multi_word_with_tags() {
+        let db = Database::open_in_memory().unwrap();
+        let mut e1 = test_entry("alice", "helper");
+        e1.tags = vec!["production".into()];
+        db.upsert_server(&e1).unwrap();
+
+        let mut e2 = test_entry("bob", "helper2");
+        e2.tags = vec!["testing".into()];
+        db.upsert_server(&e2).unwrap();
+
+        let results = db.search("helper production").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].owner, "alice");
     }
 }

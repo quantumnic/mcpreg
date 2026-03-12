@@ -113,6 +113,7 @@ pub async fn run(
         let resp = crate::api::types::SearchResponse {
             total: servers.len(),
             servers,
+            suggestions: None,
         };
         println!("{}", serde_json::to_string_pretty(&resp)?);
         return Ok(());

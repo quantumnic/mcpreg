@@ -96,7 +96,23 @@ pub async fn search(
     }
 
     let total = servers.len();
-    Ok(Json(SearchResponse { servers, total }))
+
+    // If zero results and non-empty query, add fuzzy suggestions
+    if total == 0 && !query.is_empty() {
+        let all_servers = db.list_servers(1, 500).unwrap_or_default();
+        let names: Vec<String> = all_servers.0.iter().map(|s| s.full_name()).collect();
+        let suggestions = crate::fuzzy::suggest(&query, &names, 4);
+        if !suggestions.is_empty() {
+            let suggestion_names: Vec<String> = suggestions.into_iter().map(|(n, _)| n).collect();
+            return Ok(Json(SearchResponse {
+                servers: vec![],
+                total: 0,
+                suggestions: Some(suggestion_names),
+            }));
+        }
+    }
+
+    Ok(Json(SearchResponse { servers, total, suggestions: None }))
 }
 
 pub async fn get_server(
@@ -533,4 +549,169 @@ mod tests {
         assert_eq!(v["name"], "mcpreg");
         assert!(!v["version"].as_str().unwrap().is_empty());
     }
+}
+
+/// POST /api/v1/validate — validate a server entry without publishing
+pub async fn validate_entry(
+    Json(entry): Json<ServerEntry>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let mut errors: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    // Required fields
+    if entry.owner.is_empty() {
+        errors.push("owner is required".into());
+    }
+    if entry.name.is_empty() {
+        errors.push("name is required".into());
+    }
+    if entry.command.is_empty() {
+        errors.push("command is required".into());
+    }
+    if entry.version.is_empty() {
+        errors.push("version is required".into());
+    } else {
+        let parts: Vec<&str> = entry.version.split('.').collect();
+        if parts.len() < 2 || parts.iter().any(|p| p.parse::<u64>().is_err()) {
+            errors.push("version must be in semver format (e.g. 1.0.0)".into());
+        }
+    }
+
+    // Transport validation
+    let valid_transports = ["stdio", "sse", "streamable-http"];
+    if !entry.transport.is_empty() && !valid_transports.contains(&entry.transport.as_str()) {
+        errors.push(format!(
+            "transport '{}' is not recognized (expected: {})",
+            entry.transport,
+            valid_transports.join(", ")
+        ));
+    }
+
+    // Recommendations
+    if entry.description.is_empty() {
+        warnings.push("description is empty — a good description helps discovery".into());
+    }
+    if entry.license.is_empty() {
+        warnings.push("license is empty — consider specifying one (MIT, Apache-2.0, etc.)".into());
+    }
+    if entry.tools.is_empty() && entry.resources.is_empty() && entry.prompts.is_empty() {
+        warnings.push("no tools, resources, or prompts declared — consider adding capabilities".into());
+    }
+    if entry.repository.is_empty() {
+        warnings.push("repository URL is empty — linking to source builds trust".into());
+    }
+    if entry.author.is_empty() {
+        warnings.push("author is empty".into());
+    }
+
+    // Name format check
+    if !entry.name.is_empty()
+        && !entry
+            .name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        warnings.push("name contains non-standard characters — use lowercase alphanumeric, hyphens, or underscores".into());
+    }
+
+    let valid = errors.is_empty();
+
+    Ok(Json(serde_json::json!({
+        "valid": valid,
+        "errors": errors,
+        "warnings": warnings,
+        "server": format!("{}/{}", entry.owner, entry.name),
+        "version": entry.version,
+    })))
+}
+
+/// PATCH /api/v1/servers/:owner/:name — partial update
+pub async fn patch_server(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+    Json(patch): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let mut entry = db
+        .get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+    let mut changed = Vec::new();
+
+    if let Some(desc) = patch.get("description").and_then(|v| v.as_str()) {
+        entry.description = desc.to_string();
+        changed.push("description");
+    }
+    if let Some(version) = patch.get("version").and_then(|v| v.as_str()) {
+        // Validate semver
+        let parts: Vec<&str> = version.split('.').collect();
+        if parts.len() < 2 || parts.iter().any(|p| p.parse::<u64>().is_err()) {
+            return Err(McpRegError::Validation("version must be in semver format".into()));
+        }
+        entry.version = version.to_string();
+        changed.push("version");
+    }
+    if let Some(author) = patch.get("author").and_then(|v| v.as_str()) {
+        entry.author = author.to_string();
+        changed.push("author");
+    }
+    if let Some(license) = patch.get("license").and_then(|v| v.as_str()) {
+        entry.license = license.to_string();
+        changed.push("license");
+    }
+    if let Some(repository) = patch.get("repository").and_then(|v| v.as_str()) {
+        entry.repository = repository.to_string();
+        changed.push("repository");
+    }
+    if let Some(tools) = patch.get("tools").and_then(|v| v.as_array()) {
+        entry.tools = tools
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        changed.push("tools");
+    }
+    if let Some(resources) = patch.get("resources").and_then(|v| v.as_array()) {
+        entry.resources = resources
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        changed.push("resources");
+    }
+    if let Some(prompts) = patch.get("prompts").and_then(|v| v.as_array()) {
+        entry.prompts = prompts
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        changed.push("prompts");
+    }
+    if let Some(tags) = patch.get("tags").and_then(|v| v.as_array()) {
+        entry.tags = tags
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        changed.push("tags");
+    }
+    if let Some(transport) = patch.get("transport").and_then(|v| v.as_str()) {
+        let valid_transports = ["stdio", "sse", "streamable-http"];
+        if !valid_transports.contains(&transport) {
+            return Err(McpRegError::Validation(format!(
+                "transport '{}' is not recognized",
+                transport
+            )));
+        }
+        entry.transport = transport.to_string();
+        changed.push("transport");
+    }
+
+    if changed.is_empty() {
+        return Err(McpRegError::Validation("no valid fields to update".into()));
+    }
+
+    db.upsert_server(&entry)?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "server": format!("{owner}/{name}"),
+        "updated_fields": changed,
+    })))
 }

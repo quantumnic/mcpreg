@@ -2,6 +2,7 @@ pub mod audit;
 pub mod backup;
 pub mod browse;
 pub mod compare;
+pub mod diff;
 pub mod completions;
 pub mod config_cmd;
 pub mod count;

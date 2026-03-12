@@ -46,6 +46,8 @@ pub struct Capabilities {
     pub resources: Vec<String>,
     #[serde(default)]
     pub prompts: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Registry server entry (stored in DB / returned by API)
@@ -66,6 +68,8 @@ pub struct ServerEntry {
     pub resources: Vec<String>,
     #[serde(default)]
     pub prompts: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub downloads: i64,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -92,6 +96,7 @@ impl ServerEntry {
             tools: manifest.capabilities.tools.clone(),
             resources: manifest.capabilities.resources.clone(),
             prompts: manifest.capabilities.prompts.clone(),
+            tags: manifest.capabilities.tags.clone(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -104,6 +109,9 @@ impl ServerEntry {
 pub struct SearchResponse {
     pub servers: Vec<ServerEntry>,
     pub total: usize,
+    /// Fuzzy "did you mean?" suggestions when search returns 0 results
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestions: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -233,6 +241,7 @@ tools = ["tool1"]
             tools: vec![],
             resources: vec![],
             prompts: vec![],
+            tags: vec![],
             downloads: 42,
             created_at: None,
             updated_at: None,
@@ -338,6 +347,7 @@ prompts = ["analyze", "summarize"]
             tools: vec!["tool1".into()],
             resources: vec![],
             prompts: vec!["prompt1".into(), "prompt2".into()],
+            tags: vec![],
             downloads: 42,
             created_at: Some("2024-01-01".into()),
             updated_at: Some("2024-01-02".into()),
@@ -392,6 +402,7 @@ mod additional_tests {
             tools: vec![],
             resources: vec![],
             prompts: vec![],
+            tags: vec![],
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -434,6 +445,7 @@ mod additional_tests {
                 tools: vec!["do_stuff".into()],
                 resources: vec![],
                 prompts: vec!["helper".into()],
+                tags: vec![],
             },
         };
         let entry = ServerEntry::from_manifest("dev", &manifest);
@@ -454,6 +466,7 @@ mod additional_tests {
     fn test_search_response_serde_roundtrip() {
         let resp = SearchResponse {
             total: 1,
+            suggestions: None,
             servers: vec![ServerEntry {
                 id: Some(1),
                 owner: "a".into(),
@@ -469,6 +482,7 @@ mod additional_tests {
                 tools: vec!["t1".into()],
                 resources: vec![],
                 prompts: vec![],
+                tags: vec![],
                 downloads: 42,
                 created_at: None,
                 updated_at: None,
