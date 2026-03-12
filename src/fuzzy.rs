@@ -123,3 +123,65 @@ mod tests {
         assert!(suggestions.len() <= 5);
     }
 }
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+
+    #[test]
+    fn test_suggest_exact_match() {
+        let names = vec!["hello".to_string(), "world".to_string(), "help".to_string()];
+        let suggestions = suggest("hello", &names, 3);
+        // Exact match should have distance 0
+        assert!(!suggestions.is_empty());
+        assert_eq!(suggestions[0].0, "hello");
+    }
+
+    #[test]
+    fn test_suggest_empty_query() {
+        let names = vec!["ab".to_string()];
+        // Empty query with short candidate within distance 3
+        let suggestions = suggest("", &names, 3);
+        assert!(!suggestions.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_empty_names() {
+        let names: Vec<String> = vec![];
+        let suggestions = suggest("hello", &names, 3);
+        assert!(suggestions.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_filters_by_distance() {
+        let names = vec![
+            "cat".to_string(),
+            "bat".to_string(),
+            "zzzzzzzzz".to_string(),
+        ];
+        // Only items within distance 1
+        let suggestions = suggest("cat", &names, 1);
+        assert!(suggestions.iter().all(|(_, d)| *d <= 1));
+        assert!(suggestions.iter().any(|(n, _)| n == "cat"));
+        assert!(suggestions.iter().any(|(n, _)| n == "bat"));
+        assert!(!suggestions.iter().any(|(n, _)| n == "zzzzzzzzz"));
+    }
+
+    #[test]
+    fn test_levenshtein_identical() {
+        assert_eq!(levenshtein("abc", "abc"), 0);
+    }
+
+    #[test]
+    fn test_levenshtein_empty() {
+        assert_eq!(levenshtein("", "abc"), 3);
+        assert_eq!(levenshtein("abc", ""), 3);
+    }
+
+    #[test]
+    fn test_levenshtein_single_edit() {
+        assert_eq!(levenshtein("cat", "bat"), 1);
+        assert_eq!(levenshtein("cat", "cats"), 1);
+        assert_eq!(levenshtein("cat", "at"), 1);
+    }
+}

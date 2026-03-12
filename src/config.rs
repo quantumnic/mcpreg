@@ -134,3 +134,46 @@ mod tests {
         std::env::remove_var("MCPREG_API_KEY");
     }
 }
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+
+    #[test]
+    fn test_config_default_values() {
+        let config = Config::default();
+        assert_eq!(config.registry_url, "https://registry.mcpreg.dev");
+        assert!(config.api_key.is_none());
+        assert!(config.install_dir.is_none());
+    }
+
+    #[test]
+    fn test_config_db_path_ok() {
+        let path = Config::db_path();
+        assert!(path.is_ok());
+        let path = path.unwrap();
+        assert!(path.to_string_lossy().contains("registry.db"));
+    }
+
+    #[test]
+    fn test_config_dir_ok() {
+        let dir = Config::config_dir();
+        assert!(dir.is_ok());
+    }
+
+    #[test]
+    fn test_config_config_path_ok() {
+        let path = Config::config_path();
+        assert!(path.is_ok());
+        let path = path.unwrap();
+        assert!(path.to_string_lossy().contains("config.toml"));
+    }
+
+    #[test]
+    fn test_installed_servers_path_ok() {
+        let path = Config::installed_servers_path();
+        assert!(path.is_ok());
+        let path = path.unwrap();
+        assert!(path.to_string_lossy().contains("installed.json"));
+    }
+}

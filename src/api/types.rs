@@ -370,3 +370,113 @@ prompts = ["analyze", "summarize"]
         assert!(entry.prompts.is_empty(), "Missing prompts should default to empty");
     }
 }
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+
+    #[test]
+    fn test_server_entry_full_name() {
+        let entry = ServerEntry {
+            id: None,
+            owner: "alice".into(),
+            name: "tool".into(),
+            version: "1.0.0".into(),
+            description: String::new(),
+            author: String::new(),
+            license: String::new(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        assert_eq!(entry.full_name(), "alice/tool");
+    }
+
+    #[test]
+    fn test_installed_server_full_name() {
+        let server = InstalledServer {
+            owner: "bob".into(),
+            name: "service".into(),
+            version: "2.0.0".into(),
+            command: "npx".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            installed_at: "2024-01-01".into(),
+        };
+        assert_eq!(server.full_name(), "bob/service");
+    }
+
+    #[test]
+    fn test_server_entry_from_manifest() {
+        let manifest = McpManifest {
+            package: PackageInfo {
+                name: "my-tool".into(),
+                version: "3.0.0".into(),
+                description: "A cool tool".into(),
+                author: "dev".into(),
+                license: "MIT".into(),
+                repository: "https://github.com/dev/my-tool".into(),
+            },
+            server: ServerInfo {
+                command: "node".into(),
+                args: vec!["dist/index.js".into()],
+                transport: "stdio".into(),
+                env: Default::default(),
+            },
+            capabilities: Capabilities {
+                tools: vec!["do_stuff".into()],
+                resources: vec![],
+                prompts: vec!["helper".into()],
+            },
+        };
+        let entry = ServerEntry::from_manifest("dev", &manifest);
+        assert_eq!(entry.owner, "dev");
+        assert_eq!(entry.name, "my-tool");
+        assert_eq!(entry.version, "3.0.0");
+        assert_eq!(entry.tools, vec!["do_stuff"]);
+        assert_eq!(entry.prompts, vec!["helper"]);
+    }
+
+    #[test]
+    fn test_installed_servers_default_empty() {
+        let installed = InstalledServers::default();
+        assert!(installed.servers.is_empty());
+    }
+
+    #[test]
+    fn test_search_response_serde_roundtrip() {
+        let resp = SearchResponse {
+            total: 1,
+            servers: vec![ServerEntry {
+                id: Some(1),
+                owner: "a".into(),
+                name: "b".into(),
+                version: "1.0.0".into(),
+                description: "test".into(),
+                author: "x".into(),
+                license: "MIT".into(),
+                repository: String::new(),
+                command: "node".into(),
+                args: vec![],
+                transport: "stdio".into(),
+                tools: vec!["t1".into()],
+                resources: vec![],
+                prompts: vec![],
+                downloads: 42,
+                created_at: None,
+                updated_at: None,
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: SearchResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.total, 1);
+        assert_eq!(back.servers[0].downloads, 42);
+    }
+}

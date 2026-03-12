@@ -128,6 +128,38 @@ enum Commands {
     Update {
         /// Optional server reference (owner/name) to update a single server
         server: Option<String>,
+        /// Show what would be updated without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show version history for a server
+    Versions {
+        /// Server reference (owner/name)
+        server: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all tools across the registry (discover which tools exist)
+    Tools {
+        /// Filter tools by name
+        #[arg(short, long)]
+        query: Option<String>,
+        /// Maximum number of results
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all prompts across the registry
+    Prompts {
+        /// Filter prompts by name
+        #[arg(short, long)]
+        query: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Initialize a new mcpreg.toml manifest for your MCP server project
     Init {
@@ -213,6 +245,14 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show dependencies and requirements for an MCP server
+    Deps {
+        /// Server reference (owner/name)
+        server: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Run diagnostics and check your setup
     Doctor,
     /// Show environment variables needed by an MCP server
@@ -289,7 +329,10 @@ async fn main() {
         Commands::Random { category, json } => commands::random::run(category.as_deref(), json),
         Commands::Count { by, json } => commands::count::run(Some(&by), json),
         Commands::Outdated { json } => commands::outdated::run(json),
-        Commands::Update { server } => run_update(server.as_deref()).await,
+        Commands::Update { server, dry_run } => commands::update::run(server.as_deref(), dry_run).await,
+        Commands::Versions { server, json } => commands::versions::run(&server, json),
+        Commands::Tools { query, limit, json } => commands::tools::run(query.as_deref(), limit, json),
+        Commands::Prompts { query, json } => commands::prompts::run(query.as_deref(), json),
         Commands::Init { path } => commands::init::run(path.as_deref()),
         Commands::Validate { manifest, json } => {
             commands::validate::run(manifest.as_deref(), json)
@@ -302,6 +345,7 @@ async fn main() {
             commands::config_cmd::run(&action, key.as_deref(), value.as_deref())
         }
         Commands::Which { tool, json } => commands::which::run(&tool, json),
+        Commands::Deps { server, json } => commands::deps::run(&server, json),
         Commands::Doctor => commands::doctor::run(),
         Commands::Env { server, json } => commands::env::run(&server, json).await,
         Commands::Pin { server } => commands::pin::run_pin(&server),
@@ -326,7 +370,7 @@ async fn main() {
 }
 
 /// Compare two semver version strings. Returns Ordering.
-fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     let parse = |v: &str| -> (u64, u64, u64) {
         let parts: Vec<&str> = v.split('.').collect();
         let major = parts.first().and_then(|p| p.parse().ok()).unwrap_or(0);
@@ -335,110 +379,6 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
         (major, minor, patch)
     };
     parse(a).cmp(&parse(b))
-}
-
-async fn run_update(target: Option<&str>) -> error::Result<()> {
-    let path = config::Config::installed_servers_path()?;
-    if !path.exists() {
-        println!("No servers installed.");
-        return Ok(());
-    }
-
-    let content = std::fs::read_to_string(&path)?;
-
-    // Detect pinned servers (backward-compatible)
-    let pinned_set: std::collections::HashSet<String> = {
-        if let Ok(pinned) = serde_json::from_str::<commands::pin::PinnedInstalledServers>(&content) {
-            pinned.servers.iter()
-                .filter(|s| s.pinned)
-                .map(|s| format!("{}/{}", s.owner, s.name))
-                .collect()
-        } else {
-            std::collections::HashSet::new()
-        }
-    };
-
-    let installed: api::types::InstalledServers = serde_json::from_str(&content)?;
-
-    if installed.servers.is_empty() {
-        println!("No servers installed.");
-        return Ok(());
-    }
-
-    // Filter to a specific server if requested
-    let servers_to_check: Vec<&api::types::InstalledServer> = if let Some(target_ref) = target {
-        let parts: Vec<&str> = target_ref.splitn(2, '/').collect();
-        if parts.len() != 2 {
-            return Err(error::McpRegError::Config(
-                "Server reference must be in format 'owner/name'".into(),
-            ));
-        }
-        let (t_owner, t_name) = (parts[0], parts[1]);
-        let filtered: Vec<_> = installed
-            .servers
-            .iter()
-            .filter(|s| s.owner == t_owner && s.name == t_name)
-            .collect();
-        if filtered.is_empty() {
-            return Err(error::McpRegError::NotFound(format!(
-                "{t_owner}/{t_name} is not installed"
-            )));
-        }
-        filtered
-    } else {
-        installed.servers.iter().collect()
-    };
-
-    println!(
-        "Checking {} server(s) for updates...\n",
-        servers_to_check.len()
-    );
-
-    let cfg = config::Config::load()?;
-    let client = api::client::RegistryClient::new(&cfg);
-    let mut updated = 0;
-    let mut skipped_pinned = 0;
-
-    for server in &servers_to_check {
-        let full_name = server.full_name();
-
-        // Skip pinned servers unless explicitly targeted
-        if target.is_none() && pinned_set.contains(&full_name) {
-            println!("  📌 {} is pinned at v{} (skipping)", full_name, server.version);
-            skipped_pinned += 1;
-            continue;
-        }
-
-        match client.get_server(&server.owner, &server.name).await {
-            Ok(entry) => {
-                if compare_versions(&entry.version, &server.version) == std::cmp::Ordering::Greater
-                {
-                    println!(
-                        "  ↑ {}: {} → {}",
-                        full_name, server.version, entry.version
-                    );
-                    updated += 1;
-                    if let Err(e) = commands::install::run(&full_name).await {
-                        eprintln!("    Failed to update: {e}");
-                    }
-                } else {
-                    println!(
-                        "  ✓ {} is up to date (v{})",
-                        full_name, server.version
-                    );
-                }
-            }
-            Err(e) => {
-                eprintln!("  ✗ {}: {e}", full_name);
-            }
-        }
-    }
-
-    println!("\n{updated} server(s) updated.");
-    if skipped_pinned > 0 {
-        println!("{skipped_pinned} server(s) skipped (pinned).");
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -77,3 +77,24 @@ pub fn run(server_ref: &str, limit: usize, json_output: bool) -> Result<()> {
 fn shared_tool_count_display(entry: &crate::api::types::ServerEntry) -> usize {
     entry.tools.len()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_similar_bad_ref() {
+        assert!(run("noslash", 5, false).is_err());
+    }
+
+    #[test]
+    fn test_similar_json() {
+        // Uses seeded DB; won't panic
+        let _ = run("modelcontextprotocol/filesystem", 3, true);
+    }
+
+    #[test]
+    fn test_similar_not_found() {
+        let _ = run("nobody/nothing", 5, false);
+    }
+}

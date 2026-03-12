@@ -58,7 +58,7 @@ pub async fn run(server_ref: &str, json_output: bool) -> Result<()> {
 }
 
 /// Infer environment variables from well-known MCP server patterns.
-fn infer_env_vars(owner: &str, name: &str, _command: &str, _args: &[String]) -> Vec<(String, String)> {
+pub fn infer_env_vars(owner: &str, name: &str, _command: &str, _args: &[String]) -> Vec<(String, String)> {
     let key = format!("{owner}/{name}");
     match key.as_str() {
         "modelcontextprotocol/github" => vec![

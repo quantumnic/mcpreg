@@ -92,3 +92,51 @@ impl From<serde_json::Error> for McpRegError {
 }
 
 pub type Result<T> = std::result::Result<T, McpRegError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_display_not_found() {
+        let err = McpRegError::NotFound("test/server".into());
+        let msg = format!("{err}");
+        assert!(msg.contains("test/server"));
+    }
+
+    #[test]
+    fn test_error_display_auth() {
+        let err = McpRegError::Auth("bad token".into());
+        let msg = format!("{err}");
+        assert!(msg.contains("bad token"));
+    }
+
+    #[test]
+    fn test_error_display_config() {
+        let err = McpRegError::Config("missing key".into());
+        let msg = format!("{err}");
+        assert!(msg.contains("missing key"));
+    }
+
+    #[test]
+    fn test_error_display_manifest() {
+        let err = McpRegError::Manifest("bad toml".into());
+        let msg = format!("{err}");
+        assert!(msg.contains("bad toml"));
+    }
+
+    #[test]
+    fn test_error_display_validation() {
+        let err = McpRegError::Validation("3 issues".into());
+        let msg = format!("{err}");
+        assert!(msg.contains("3 issues"));
+    }
+
+    #[test]
+    fn test_error_from_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
+        let err: McpRegError = io_err.into();
+        let msg = format!("{err}");
+        assert!(msg.contains("file missing"));
+    }
+}
