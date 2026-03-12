@@ -753,6 +753,51 @@ mod tests {
 }
 
 impl Database {
+    /// Search servers that have a specific tag (case-insensitive substring match).
+    #[allow(dead_code)]
+    pub fn search_by_tags(&self, tag: &str) -> Result<Vec<ServerEntry>> {
+        let escaped = escape_like(tag);
+        let pattern = format!("%{escaped}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT id, owner, name, version, description, author, license, repository,
+                    command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
+             FROM servers WHERE LOWER(tags) LIKE LOWER(?1) ESCAPE '\\' ORDER BY downloads DESC",
+        )?;
+        let rows = stmt.query_map(params![pattern], row_mapper)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?.into_entry());
+        }
+        Ok(entries)
+    }
+
+    /// List all unique tags with their server counts.
+    pub fn list_tags(&self) -> Result<Vec<(String, Vec<String>)>> {
+        let mut stmt = self.conn.prepare("SELECT owner, name, tags FROM servers")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+
+        let mut tag_map: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            let (owner, name, tags_json) = row?;
+            let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+            let full_name = format!("{owner}/{name}");
+            for tag in tags {
+                tag_map.entry(tag).or_default().push(full_name.clone());
+            }
+        }
+
+        let mut result: Vec<(String, Vec<String>)> = tag_map.into_iter().collect();
+        result.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        Ok(result)
+    }
+
     /// Find servers similar to the given one based on shared tools, category, and description overlap.
     /// Returns servers sorted by similarity score (0.0–1.0), excluding the queried server itself.
     pub fn find_similar(&self, owner: &str, name: &str, limit: usize) -> Result<Vec<(ServerEntry, f64)>> {
@@ -1506,5 +1551,107 @@ mod improved_search_tests {
         let results = db.search("llm").unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "tagged");
+    }
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+
+    fn test_entry_with_tags(owner: &str, name: &str, tags: Vec<&str>) -> ServerEntry {
+        ServerEntry {
+            id: None,
+            owner: owner.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: "A test server".into(),
+            author: owner.into(),
+            license: "MIT".into(),
+            repository: format!("https://github.com/{owner}/{name}"),
+            command: "node".into(),
+            args: vec!["index.js".into()],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: tags.into_iter().map(String::from).collect(),
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_search_by_tags() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry_with_tags("alice", "server1", vec!["ai", "llm"])).unwrap();
+        db.upsert_server(&test_entry_with_tags("bob", "server2", vec!["database", "sql"])).unwrap();
+        db.upsert_server(&test_entry_with_tags("carol", "server3", vec!["ai", "vision"])).unwrap();
+
+        let results = db.search_by_tags("ai").unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|s| s.tags.iter().any(|t| t.contains("ai"))));
+    }
+
+    #[test]
+    fn test_search_by_tags_case_insensitive() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry_with_tags("alice", "s1", vec!["AI", "LLM"])).unwrap();
+        let results = db.search_by_tags("ai").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_by_tags_no_match() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry_with_tags("alice", "s1", vec!["web"])).unwrap();
+        let results = db.search_by_tags("database").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_list_tags() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry_with_tags("alice", "s1", vec!["ai", "llm"])).unwrap();
+        db.upsert_server(&test_entry_with_tags("bob", "s2", vec!["ai", "web"])).unwrap();
+        db.upsert_server(&test_entry_with_tags("carol", "s3", vec!["web"])).unwrap();
+
+        let tags = db.list_tags().unwrap();
+        assert!(tags.len() >= 3);
+        // "ai" should have 2 servers, "web" 2, "llm" 1
+        let ai_entry = tags.iter().find(|(t, _)| t == "ai").unwrap();
+        assert_eq!(ai_entry.1.len(), 2);
+        let web_entry = tags.iter().find(|(t, _)| t == "web").unwrap();
+        assert_eq!(web_entry.1.len(), 2);
+    }
+
+    #[test]
+    fn test_list_tags_empty_db() {
+        let db = Database::open_in_memory().unwrap();
+        let tags = db.list_tags().unwrap();
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_list_tags_sorted_by_count() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry_with_tags("a", "s1", vec!["rare"])).unwrap();
+        db.upsert_server(&test_entry_with_tags("b", "s2", vec!["common", "rare"])).unwrap();
+        db.upsert_server(&test_entry_with_tags("c", "s3", vec!["common"])).unwrap();
+        db.upsert_server(&test_entry_with_tags("d", "s4", vec!["common"])).unwrap();
+
+        let tags = db.list_tags().unwrap();
+        assert_eq!(tags[0].0, "common");
+        assert_eq!(tags[0].1.len(), 3);
+    }
+
+    #[test]
+    fn test_seed_servers_have_tags() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let tags = db.list_tags().unwrap();
+        assert!(tags.len() >= 5, "Seeded servers should produce at least 5 unique tags");
+        // "official" tag should exist for modelcontextprotocol servers
+        assert!(tags.iter().any(|(t, _)| t == "official"), "Should have 'official' tag");
     }
 }

@@ -1,8 +1,64 @@
 use crate::api::types::ServerEntry;
 
+/// Auto-assign tags based on server name, category, and known characteristics.
+fn auto_tags(owner: &str, name: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    let cat = server_category(owner, name);
+
+    // Category-based tags
+    if cat.contains("Files") { tags.push("filesystem".into()); tags.push("files".into()); }
+    if cat.contains("Databases") { tags.push("database".into()); tags.push("sql".into()); }
+    if cat.contains("Dev Tools") { tags.push("developer".into()); tags.push("devtools".into()); }
+    if cat.contains("Communication") { tags.push("messaging".into()); tags.push("communication".into()); }
+    if cat.contains("Browser") { tags.push("browser".into()); tags.push("web".into()); tags.push("automation".into()); }
+    if cat.contains("AI") { tags.push("ai".into()); tags.push("reasoning".into()); }
+    if cat.contains("Utilities") { tags.push("utility".into()); }
+    if cat.contains("Cloud") { tags.push("cloud".into()); tags.push("infrastructure".into()); }
+    if cat.contains("Commerce") { tags.push("commerce".into()); }
+    if cat.contains("Observability") { tags.push("monitoring".into()); tags.push("observability".into()); }
+    if cat.contains("Productivity") { tags.push("productivity".into()); }
+    if cat.contains("Design") { tags.push("design".into()); }
+
+    // Name-based tags
+    match name {
+        "postgres" | "sqlite" | "neon" | "turso" | "astra-db" => { tags.push("sql".into()); }
+        "redis" => { tags.push("nosql".into()); tags.push("cache".into()); }
+        "github" | "gitlab" | "git" => { tags.push("git".into()); tags.push("vcs".into()); }
+        "puppeteer" | "playwright" | "stagehand" | "firecrawl" => { tags.push("scraping".into()); }
+        "docker" => { tags.push("containers".into()); }
+        "fetch" => { tags.push("http".into()); tags.push("web".into()); }
+        "memory" => { tags.push("knowledge-graph".into()); }
+        "sequentialthinking" => { tags.push("planning".into()); }
+        _ => {}
+    }
+
+    // Name-based heuristic tags for anything not yet matched
+    if name.contains("search") { tags.push("search".into()); }
+    if name.contains("web") { tags.push("web".into()); }
+    if name.contains("api") { tags.push("api".into()); }
+    if name.contains("cloud") { tags.push("cloud".into()); }
+    if name.contains("ai") || name.contains("llm") || name.contains("model") {
+        tags.push("ai".into());
+    }
+
+    // Official tag
+    if owner == "modelcontextprotocol" {
+        tags.push("official".into());
+    }
+
+    // Ensure every server gets at least one tag based on category
+    if tags.is_empty() {
+        tags.push("mcp".into());
+    }
+
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
 /// Returns a curated list of well-known MCP servers for seeding the registry.
 pub fn default_servers() -> Vec<ServerEntry> {
-    vec![
+    let mut servers = vec![
         // ── Reference servers (official, from modelcontextprotocol/servers) ──
         ServerEntry {
             id: None,
@@ -929,7 +985,16 @@ pub fn default_servers() -> Vec<ServerEntry> {
             created_at: None,
             updated_at: None,
         },
-    ]
+    ];
+
+    // Auto-assign tags to all seed servers
+    for server in &mut servers {
+        if server.tags.is_empty() {
+            server.tags = auto_tags(&server.owner, &server.name);
+        }
+    }
+
+    servers
 }
 
 /// Categories for organizing servers in browse views.
@@ -987,6 +1052,41 @@ mod tests {
             assert!(!s.command.is_empty(), "Empty command for {}/{}", s.owner, s.name);
             assert!(!s.repository.is_empty(), "Empty repository for {}/{}", s.owner, s.name);
         }
+    }
+
+    #[test]
+    fn test_auto_tags_assigned() {
+        let servers = default_servers();
+        // All seed servers should now have tags
+        for s in &servers {
+            assert!(
+                !s.tags.is_empty(),
+                "Server {}/{} should have auto-assigned tags",
+                s.owner,
+                s.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_auto_tags_official() {
+        let tags = auto_tags("modelcontextprotocol", "filesystem");
+        assert!(tags.contains(&"official".to_string()));
+        assert!(tags.contains(&"filesystem".to_string()));
+    }
+
+    #[test]
+    fn test_auto_tags_database() {
+        let tags = auto_tags("modelcontextprotocol", "postgres");
+        assert!(tags.contains(&"database".to_string()));
+        assert!(tags.contains(&"sql".to_string()));
+    }
+
+    #[test]
+    fn test_auto_tags_browser() {
+        let tags = auto_tags("modelcontextprotocol", "puppeteer");
+        assert!(tags.contains(&"browser".to_string()));
+        assert!(tags.contains(&"scraping".to_string()));
     }
 
     #[test]

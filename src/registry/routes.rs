@@ -21,6 +21,7 @@ pub struct SearchQuery {
     pub transport: Option<String>,
     pub author: Option<String>,
     pub owner: Option<String>,
+    pub tag: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -75,6 +76,14 @@ pub async fn search(
     if let Some(ref owner) = params.owner {
         let owner_lower = owner.to_lowercase();
         servers.retain(|s| s.owner.to_lowercase().contains(&owner_lower));
+    }
+
+    // Server-side tag filter
+    if let Some(ref tag) = params.tag {
+        let tag_lower = tag.to_lowercase();
+        servers.retain(|s| {
+            s.tags.iter().any(|t| t.to_lowercase().contains(&tag_lower))
+        });
     }
 
     // Server-side sorting
@@ -353,6 +362,45 @@ pub async fn tools_index(
 pub struct ToolsQuery {
     pub q: Option<String>,
     pub limit: Option<usize>,
+}
+
+/// GET /api/v1/tags — list all unique tags across the registry
+pub async fn tags_index(
+    State(db): State<DbState>,
+    Query(params): Query<ToolsQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let all_tags = db.list_tags()?;
+
+    let mut items: Vec<serde_json::Value> = all_tags
+        .into_iter()
+        .map(|(tag, servers)| {
+            serde_json::json!({
+                "tag": tag,
+                "server_count": servers.len(),
+                "servers": servers,
+            })
+        })
+        .collect();
+
+    if let Some(ref q) = params.q {
+        let q_lower = q.to_lowercase();
+        items.retain(|item| {
+            item["tag"]
+                .as_str()
+                .map(|t| t.to_lowercase().contains(&q_lower))
+                .unwrap_or(false)
+        });
+    }
+
+    let total = items.len();
+    let limit = params.limit.unwrap_or(100).min(500);
+    items.truncate(limit);
+
+    Ok(Json(serde_json::json!({
+        "tags": items,
+        "total": total,
+    })))
 }
 
 /// POST /api/v1/servers/batch — fetch multiple servers by owner/name pairs

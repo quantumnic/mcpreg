@@ -69,6 +69,9 @@ enum Commands {
         /// Filter by owner/organization
         #[arg(long)]
         owner: Option<String>,
+        /// Filter by tag (e.g. "ai", "database", "web")
+        #[arg(long)]
+        tag: Option<String>,
     },
     /// Install an MCP server and add it to claude_desktop_config.json
     Install {
@@ -234,6 +237,20 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show changelog / version progression for a server
+    Changelog {
+        /// Server reference (owner/name)
+        server: String,
+        /// Starting version to compare from
+        #[arg(long)]
+        from: Option<String>,
+        /// Ending version to compare to (default: current)
+        #[arg(long)]
+        to: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare two MCP servers side-by-side (tools, resources, prompts)
     Compare {
         /// First server reference (owner/name)
@@ -394,7 +411,8 @@ async fn main() {
             transport,
             author,
             owner,
-        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, min_downloads, tool.as_deref(), transport.as_deref(), author.as_deref(), owner.as_deref()).await,
+            tag,
+        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, min_downloads, tool.as_deref(), transport.as_deref(), author.as_deref(), owner.as_deref(), tag.as_deref()).await,
         Commands::Install { server } => commands::install::run(&server).await,
         Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
@@ -422,6 +440,9 @@ async fn main() {
             commands::validate::run(manifest.as_deref(), json)
         }
         Commands::Stats { json } => commands::stats::run(json),
+        Commands::Changelog { server, from, to, json } => {
+            commands::changelog::run(&server, from.as_deref(), to.as_deref(), json)
+        }
         Commands::Diff { server, from, json } => {
             commands::diff::run(&server, from.as_deref(), json)
         }

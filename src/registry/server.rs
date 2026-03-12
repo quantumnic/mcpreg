@@ -65,6 +65,7 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/tools", axum::routing::get(routes::tools_index))
         .route("/api/v1/categories", axum::routing::get(routes::categories))
         .route("/api/v1/prompts", axum::routing::get(routes::prompts_index))
+        .route("/api/v1/tags", axum::routing::get(routes::tags_index))
         .route("/api/v1/trending", axum::routing::get(routes::trending))
         .route("/api/v1/graph", axum::routing::get(routes::tool_graph))
         .layer(CorsLayer::permissive())
@@ -1719,6 +1720,133 @@ mod graph_tests {
             let c0 = edges[0]["shared_count"].as_u64().unwrap();
             let c1 = edges[1]["shared_count"].as_u64().unwrap();
             assert!(c0 >= c1, "Edges should be sorted by shared_count desc");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tags_endpoint_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_tags_index() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/tags")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().unwrap() >= 5, "Should have many tags from seeded data");
+        let tags = result["tags"].as_array().unwrap();
+        assert!(!tags.is_empty());
+        // Each tag should have name, server_count, servers
+        let first = &tags[0];
+        assert!(first["tag"].is_string());
+        assert!(first["server_count"].as_u64().unwrap() > 0);
+        assert!(first["servers"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_api_tags_with_query() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/tags?q=official")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().unwrap() >= 1);
+        for tag in result["tags"].as_array().unwrap() {
+            assert!(tag["tag"].as_str().unwrap().contains("official"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_tags_with_limit() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/tags?limit=3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["tags"].as_array().unwrap().len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_api_tags_no_match() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/tags?q=nonexistenttag12345")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["total"].as_u64().unwrap(), 0);
+        assert!(result["tags"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_search_with_tag_filter() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&tag=database")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(search.total > 0, "Should find servers tagged 'database'");
+        for s in &search.servers {
+            assert!(
+                s.tags.iter().any(|t| t.to_lowercase().contains("database")),
+                "Server {} should have database tag, got {:?}",
+                s.full_name(),
+                s.tags
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_with_tag_filter_official() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&tag=official")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(search.total > 0);
+        for s in &search.servers {
+            assert_eq!(s.owner, "modelcontextprotocol", "Official tag should only be on MCP servers");
         }
     }
 }

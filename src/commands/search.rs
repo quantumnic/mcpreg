@@ -18,6 +18,7 @@ pub async fn run(
     transport_filter: Option<&str>,
     author_filter: Option<&str>,
     owner_filter: Option<&str>,
+    tag_filter: Option<&str>,
 ) -> Result<()> {
     let mut servers = if offline {
         // Search local database directly
@@ -89,6 +90,14 @@ pub async fn run(
     if let Some(owner) = owner_filter {
         let owner_lower = owner.to_lowercase();
         servers.retain(|s| s.owner.to_lowercase().contains(&owner_lower));
+    }
+
+    // Tag filter
+    if let Some(tag) = tag_filter {
+        let tag_lower = tag.to_lowercase();
+        servers.retain(|s| {
+            s.tags.iter().any(|t| t.to_lowercase().contains(&tag_lower))
+        });
     }
 
     // Client-side sorting
