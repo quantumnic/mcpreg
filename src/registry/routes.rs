@@ -185,8 +185,19 @@ pub async fn track_download(
     }
 }
 
-pub async fn health() -> &'static str {
-    "ok"
+pub async fn health(
+    State(db): State<DbState>,
+) -> Json<serde_json::Value> {
+    let db = db.lock().await;
+    let server_count = db
+        .stats()
+        .map(|s| s.total_servers as i64)
+        .unwrap_or(-1);
+    Json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "servers": server_count,
+    }))
 }
 
 /// GET /api/v1/version — server version info
@@ -453,15 +464,53 @@ pub async fn similar_servers(
     })))
 }
 
+/// GET /api/v1/servers/:owner/:name/diff?from=VERSION
+///
+/// Compare the current server entry against a previous version.
+/// Useful for checking what changed (new tools, updated description, etc.).
+#[derive(Deserialize)]
+pub struct DiffQuery {
+    pub from: Option<String>,
+}
+
+pub async fn server_diff(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+    Query(query): Query<DiffQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let current = db
+        .get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+    let from_version = query.from.unwrap_or_default();
+
+    // Build a basic diff — we show the current state and what the "from" version was
+    // (In a full system we'd store snapshots; here we compare against version string)
+    let versions = db.get_version_history(&owner, &name)?;
+    let version_list: Vec<&str> = versions.iter().map(|(v, _)| v.as_str()).collect();
+
+    let has_from = !from_version.is_empty() && version_list.contains(&from_version.as_str());
+
+    Ok(Json(serde_json::json!({
+        "server": format!("{owner}/{name}"),
+        "current_version": current.version,
+        "from_version": if has_from { &from_version } else { "unknown" },
+        "current": {
+            "tools": current.tools,
+            "resources": current.resources,
+            "prompts": current.prompts,
+            "description": current.description,
+            "transport": current.transport,
+        },
+        "versions": versions.iter().map(|(v, d)| serde_json::json!({"version": v, "date": d})).collect::<Vec<_>>(),
+        "total_versions": versions.len(),
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_health_endpoint() {
-        let result = health().await;
-        assert_eq!(result, "ok");
-    }
 
     #[tokio::test]
     async fn test_version_endpoint() {

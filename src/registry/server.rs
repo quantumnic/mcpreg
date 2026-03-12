@@ -52,6 +52,10 @@ pub fn build_router(db_state: DbState) -> Router {
             "/api/v1/servers/:owner/:name/similar",
             axum::routing::get(routes::similar_servers),
         )
+        .route(
+            "/api/v1/servers/:owner/:name/diff",
+            axum::routing::get(routes::server_diff),
+        )
         .route("/api/v1/servers", axum::routing::get(routes::list_servers))
         .route("/api/v1/servers/batch", axum::routing::post(routes::batch_get_servers))
         .route("/api/v1/publish", axum::routing::post(routes::publish))
@@ -974,5 +978,106 @@ mod improvement_tests {
                 search.servers[i - 1].name.to_lowercase() <= search.servers[i].name.to_lowercase(),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod diff_endpoint_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn test_app_with_versions() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = ServerEntry {
+            id: None,
+            owner: "alice".into(),
+            name: "tool".into(),
+            version: "1.0.0".into(),
+            description: "Initial version".into(),
+            author: "alice".into(),
+            license: "MIT".into(),
+            repository: "https://github.com/alice/tool".into(),
+            command: "node".into(),
+            args: vec!["index.js".into()],
+            transport: "stdio".into(),
+            tools: vec!["read".into()],
+            resources: vec![],
+            prompts: vec![],
+            downloads: 100,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+        entry.version = "2.0.0".into();
+        entry.tools = vec!["read".into(), "write".into(), "delete".into()];
+        entry.description = "Updated with write and delete support".into();
+        db.upsert_server(&entry).unwrap();
+
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_diff_endpoint() {
+        let app = test_app_with_versions().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/alice/tool/diff?from=1.0.0")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["current_version"], "2.0.0");
+        assert_eq!(result["from_version"], "1.0.0");
+        assert_eq!(result["current"]["tools"].as_array().unwrap().len(), 3);
+        assert!(result["total_versions"].as_u64().unwrap() >= 2);
+    }
+
+    #[tokio::test]
+    async fn test_diff_endpoint_no_from() {
+        let app = test_app_with_versions().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/alice/tool/diff")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["from_version"], "unknown");
+    }
+
+    #[tokio::test]
+    async fn test_diff_not_found() {
+        let app = test_app_with_versions().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/nobody/nothing/diff")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_health_returns_json() {
+        let app = test_app_with_versions().await;
+        let req = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["status"], "ok");
+        assert!(result["version"].as_str().is_some());
+        assert!(result["servers"].as_i64().unwrap() >= 0);
     }
 }

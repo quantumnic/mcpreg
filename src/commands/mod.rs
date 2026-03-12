@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod browse;
 pub mod compare;
 pub mod completions;
@@ -16,6 +17,7 @@ pub mod pin;
 pub mod prompts;
 pub mod publish;
 pub mod random;
+pub mod recommend;
 pub mod search;
 pub mod similar;
 pub mod stats;

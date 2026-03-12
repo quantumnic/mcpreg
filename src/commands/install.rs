@@ -102,6 +102,11 @@ fn update_claude_config(name: &str, command: &str, args: &[String]) -> Result<()
     Ok(())
 }
 
+/// Public wrapper for timestamp generation.
+pub fn chrono_now_public() -> String {
+    chrono_now()
+}
+
 fn chrono_now() -> String {
     // Simple ISO-8601 timestamp without chrono dependency
     use std::time::{SystemTime, UNIX_EPOCH};

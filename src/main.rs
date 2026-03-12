@@ -275,6 +275,29 @@ enum Commands {
     },
     /// List all pinned servers
     Pinned,
+    /// Get personalized server recommendations based on installed servers
+    Recommend {
+        /// Maximum number of recommendations (default: 10)
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Backup installed servers and config to a JSON file
+    Backup {
+        /// Output file path (prints to stdout if not given)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Restore installed servers from a backup file
+    Restore {
+        /// Path to backup JSON file
+        file: String,
+        /// Show what would be restored without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -351,6 +374,9 @@ async fn main() {
         Commands::Pin { server } => commands::pin::run_pin(&server),
         Commands::Unpin { server } => commands::pin::run_unpin(&server),
         Commands::Pinned => commands::pin::run_list(),
+        Commands::Recommend { limit, json } => commands::recommend::run(limit, json),
+        Commands::Backup { output } => commands::backup::run_backup(output.as_deref()),
+        Commands::Restore { file, dry_run } => commands::backup::run_restore(&file, dry_run),
         Commands::Completions { shell } => commands::completions::run(shell),
         Commands::Serve { bind, db } => {
             let db_path = match db {
