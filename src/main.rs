@@ -63,6 +63,12 @@ enum Commands {
         /// Filter by transport type (stdio, sse, streamable-http)
         #[arg(long)]
         transport: Option<String>,
+        /// Filter by author name
+        #[arg(long)]
+        author: Option<String>,
+        /// Filter by owner/organization
+        #[arg(long)]
+        owner: Option<String>,
     },
     /// Install an MCP server and add it to claude_desktop_config.json
     Install {
@@ -298,6 +304,27 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Check registry connectivity and server health
+    Health {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show local action history (installs, updates, searches)
+    History {
+        /// Maximum entries to show (default: 20)
+        #[arg(short = 'n', long, default_value = "20")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Security audit of installed MCP servers
+    Audit {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -333,7 +360,9 @@ async fn main() {
             min_downloads,
             tool,
             transport,
-        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, min_downloads, tool.as_deref(), transport.as_deref()).await,
+            author,
+            owner,
+        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, min_downloads, tool.as_deref(), transport.as_deref(), author.as_deref(), owner.as_deref()).await,
         Commands::Install { server } => commands::install::run(&server).await,
         Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
@@ -377,6 +406,12 @@ async fn main() {
         Commands::Recommend { limit, json } => commands::recommend::run(limit, json),
         Commands::Backup { output } => commands::backup::run_backup(output.as_deref()),
         Commands::Restore { file, dry_run } => commands::backup::run_restore(&file, dry_run),
+        Commands::Health { json } => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(commands::health::run(json))
+        }
+        Commands::History { limit, json } => commands::history::run(limit, json),
+        Commands::Audit { json } => commands::audit::run(json),
         Commands::Completions { shell } => commands::completions::run(shell),
         Commands::Serve { bind, db } => {
             let db_path = match db {

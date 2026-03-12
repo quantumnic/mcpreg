@@ -75,6 +75,17 @@ impl RegistryClient {
         Ok(body)
     }
 
+    /// Check registry health / connectivity.
+    pub async fn health(&self) -> Result<std::collections::HashMap<String, serde_json::Value>> {
+        let url = format!("{}/health", self.base_url);
+        let resp = self.client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Err(McpRegError::Registry(format!("Health check failed: HTTP {}", resp.status())));
+        }
+        let body = resp.json::<std::collections::HashMap<String, serde_json::Value>>().await?;
+        Ok(body)
+    }
+
     #[allow(dead_code)]
     pub async fn list_servers(&self, page: usize, per_page: usize) -> Result<PaginatedResponse> {
         let url = format!("{}/api/v1/servers?page={}&per_page={}", self.base_url, page, per_page);

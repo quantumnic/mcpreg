@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod backup;
 pub mod browse;
 pub mod compare;
@@ -8,6 +9,8 @@ pub mod deps;
 pub mod doctor;
 pub mod env;
 pub mod export;
+pub mod health;
+pub mod history;
 pub mod info;
 pub mod init;
 pub mod install;

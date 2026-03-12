@@ -19,6 +19,8 @@ pub struct SearchQuery {
     pub min_downloads: Option<i64>,
     pub tool: Option<String>,
     pub transport: Option<String>,
+    pub author: Option<String>,
+    pub owner: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +63,18 @@ pub async fn search(
     if let Some(ref transport) = params.transport {
         let t_lower = transport.to_lowercase();
         servers.retain(|s| s.transport.to_lowercase() == t_lower);
+    }
+
+    // Server-side author filter
+    if let Some(ref author) = params.author {
+        let author_lower = author.to_lowercase();
+        servers.retain(|s| s.author.to_lowercase().contains(&author_lower));
+    }
+
+    // Server-side owner filter
+    if let Some(ref owner) = params.owner {
+        let owner_lower = owner.to_lowercase();
+        servers.retain(|s| s.owner.to_lowercase().contains(&owner_lower));
     }
 
     // Server-side sorting

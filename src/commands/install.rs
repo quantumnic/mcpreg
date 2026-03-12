@@ -65,6 +65,13 @@ pub async fn run(server_ref: &str) -> Result<()> {
     );
     println!("  Config updated in claude_desktop_config.json");
 
+    // Record in history
+    let _ = crate::commands::history::History::record(
+        "install",
+        Some(&format!("{}/{}", entry.owner, entry.name)),
+        Some(&format!("v{}", entry.version)),
+    );
+
     Ok(())
 }
 

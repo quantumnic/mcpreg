@@ -1081,3 +1081,94 @@ mod diff_endpoint_tests {
         assert!(result["servers"].as_i64().unwrap() >= 0);
     }
 }
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_search_with_author_filter() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&author=Anthropic")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(search.total > 0, "Should find servers by Anthropic");
+        for s in &search.servers {
+            assert!(
+                s.author.to_lowercase().contains("anthropic"),
+                "Expected Anthropic author, got '{}'", s.author
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_with_owner_filter() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&owner=modelcontextprotocol")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(search.total > 0);
+        for s in &search.servers {
+            assert!(
+                s.owner.to_lowercase().contains("modelcontextprotocol"),
+                "Expected MCP owner, got '{}'", s.owner
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_combined_author_and_category() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&author=Anthropic&category=database")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        for s in &search.servers {
+            assert!(s.author.to_lowercase().contains("anthropic"));
+            let cat = crate::registry::seed::server_category(&s.owner, &s.name).to_lowercase();
+            assert!(cat.contains("database"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_author_no_match() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&author=NonExistentAuthor12345")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(search.total, 0);
+    }
+}
