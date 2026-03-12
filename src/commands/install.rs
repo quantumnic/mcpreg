@@ -199,6 +199,6 @@ mod timestamp_tests {
     fn test_chrono_now_year_reasonable() {
         let ts = chrono_now();
         let year: u32 = ts[..4].parse().unwrap();
-        assert!(year >= 2024 && year <= 2100, "Year out of range: {year}");
+        assert!((2024..=2100).contains(&year), "Year out of range: {year}");
     }
 }

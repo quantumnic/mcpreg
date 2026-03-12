@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand, ValueEnum};
     about = "Open source registry and marketplace for MCP servers",
     long_about = "mcpreg — search, install, publish, and manage MCP (Model Context Protocol) servers.\n\nLike npm or crates.io, but for MCP servers. Self-hostable."
 )]
-struct Cli {
+pub struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
@@ -215,6 +215,32 @@ enum Commands {
     },
     /// Run diagnostics and check your setup
     Doctor,
+    /// Show environment variables needed by an MCP server
+    Env {
+        /// Server reference (owner/name)
+        server: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pin an installed server to prevent auto-update
+    Pin {
+        /// Server reference (owner/name)
+        server: String,
+    },
+    /// Unpin an installed server to allow auto-update
+    Unpin {
+        /// Server reference (owner/name)
+        server: String,
+    },
+    /// List all pinned servers
+    Pinned,
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
     /// Start the self-hosted registry server
     Serve {
         /// Bind address (default: 0.0.0.0:3000)
@@ -277,6 +303,11 @@ async fn main() {
         }
         Commands::Which { tool, json } => commands::which::run(&tool, json),
         Commands::Doctor => commands::doctor::run(),
+        Commands::Env { server, json } => commands::env::run(&server, json).await,
+        Commands::Pin { server } => commands::pin::run_pin(&server),
+        Commands::Unpin { server } => commands::pin::run_unpin(&server),
+        Commands::Pinned => commands::pin::run_list(),
+        Commands::Completions { shell } => commands::completions::run(shell),
         Commands::Serve { bind, db } => {
             let db_path = match db {
                 Some(p) => p,
@@ -314,6 +345,19 @@ async fn run_update(target: Option<&str>) -> error::Result<()> {
     }
 
     let content = std::fs::read_to_string(&path)?;
+
+    // Detect pinned servers (backward-compatible)
+    let pinned_set: std::collections::HashSet<String> = {
+        if let Ok(pinned) = serde_json::from_str::<commands::pin::PinnedInstalledServers>(&content) {
+            pinned.servers.iter()
+                .filter(|s| s.pinned)
+                .map(|s| format!("{}/{}", s.owner, s.name))
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        }
+    };
+
     let installed: api::types::InstalledServers = serde_json::from_str(&content)?;
 
     if installed.servers.is_empty() {
@@ -353,34 +397,47 @@ async fn run_update(target: Option<&str>) -> error::Result<()> {
     let cfg = config::Config::load()?;
     let client = api::client::RegistryClient::new(&cfg);
     let mut updated = 0;
+    let mut skipped_pinned = 0;
 
     for server in &servers_to_check {
+        let full_name = server.full_name();
+
+        // Skip pinned servers unless explicitly targeted
+        if target.is_none() && pinned_set.contains(&full_name) {
+            println!("  📌 {} is pinned at v{} (skipping)", full_name, server.version);
+            skipped_pinned += 1;
+            continue;
+        }
+
         match client.get_server(&server.owner, &server.name).await {
             Ok(entry) => {
                 if compare_versions(&entry.version, &server.version) == std::cmp::Ordering::Greater
                 {
                     println!(
-                        "  ↑ {}/{}: {} → {}",
-                        server.owner, server.name, server.version, entry.version
+                        "  ↑ {}: {} → {}",
+                        full_name, server.version, entry.version
                     );
                     updated += 1;
-                    if let Err(e) = commands::install::run(&server.full_name()).await {
+                    if let Err(e) = commands::install::run(&full_name).await {
                         eprintln!("    Failed to update: {e}");
                     }
                 } else {
                     println!(
-                        "  ✓ {}/{} is up to date (v{})",
-                        server.owner, server.name, server.version
+                        "  ✓ {} is up to date (v{})",
+                        full_name, server.version
                     );
                 }
             }
             Err(e) => {
-                eprintln!("  ✗ {}/{}: {e}", server.owner, server.name);
+                eprintln!("  ✗ {}: {e}", full_name);
             }
         }
     }
 
     println!("\n{updated} server(s) updated.");
+    if skipped_pinned > 0 {
+        println!("{skipped_pinned} server(s) skipped (pinned).");
+    }
     Ok(())
 }
 
@@ -407,14 +464,19 @@ mod tests {
 
     #[test]
     fn test_compare_versions_date_style() {
-        // Handles versions like "2024.11.0"
         assert_eq!(compare_versions("2025.1.0", "2024.11.0"), std::cmp::Ordering::Greater);
     }
 
     #[test]
     fn test_compare_versions_partial() {
-        // Graceful with incomplete versions
         assert_eq!(compare_versions("1.0", "1.0.0"), std::cmp::Ordering::Equal);
         assert_eq!(compare_versions("2", "1.9.9"), std::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn test_cli_parses_completions() {
+        use clap::CommandFactory;
+        // Verify the CLI definition is valid (catches typos in arg definitions)
+        Cli::command().debug_assert();
     }
 }

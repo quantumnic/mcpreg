@@ -1,14 +1,17 @@
 pub mod browse;
 pub mod compare;
+pub mod completions;
 pub mod config_cmd;
 pub mod count;
 pub mod doctor;
+pub mod env;
 pub mod export;
 pub mod info;
 pub mod init;
 pub mod install;
 pub mod list;
 pub mod outdated;
+pub mod pin;
 pub mod publish;
 pub mod random;
 pub mod search;

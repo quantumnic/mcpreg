@@ -45,6 +45,10 @@ pub fn build_router(db_state: DbState) -> Router {
             axum::routing::post(routes::track_download),
         )
         .route(
+            "/api/v1/servers/:owner/:name/versions",
+            axum::routing::get(routes::version_history),
+        )
+        .route(
             "/api/v1/servers/:owner/:name/similar",
             axum::routing::get(routes::similar_servers),
         )
@@ -891,6 +895,64 @@ mod improvement_tests {
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(result["total"].as_u64().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_api_version_history() {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = ServerEntry {
+            id: None,
+            owner: "alice".into(),
+            name: "tool".into(),
+            version: "1.0.0".into(),
+            description: "Test".into(),
+            author: "alice".into(),
+            license: "MIT".into(),
+            repository: "https://github.com/alice/tool".into(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+        entry.version = "1.1.0".into();
+        db.upsert_server(&entry).unwrap();
+        entry.version = "2.0.0".into();
+        db.upsert_server(&entry).unwrap();
+
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        let app = build_router(db_state);
+
+        let req = Request::builder()
+            .uri("/api/v1/servers/alice/tool/versions")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["current_version"], "2.0.0");
+        assert_eq!(result["total"].as_u64().unwrap(), 3);
+        let versions = result["versions"].as_array().unwrap();
+        assert_eq!(versions[0]["version"], "2.0.0");
+        assert_eq!(versions[2]["version"], "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn test_api_version_history_not_found() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/nobody/nothing/versions")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

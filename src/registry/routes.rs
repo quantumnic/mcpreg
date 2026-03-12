@@ -400,6 +400,30 @@ pub struct SimilarQuery {
     pub limit: Option<usize>,
 }
 
+/// GET /api/v1/servers/:owner/:name/versions — list version history
+pub async fn version_history(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    // Verify server exists
+    match db.get_server(&owner, &name)? {
+        Some(entry) => {
+            let versions = db.get_version_history(&owner, &name)?;
+            Ok(Json(serde_json::json!({
+                "server": entry.full_name(),
+                "current_version": entry.version,
+                "versions": versions.iter().map(|(v, t)| serde_json::json!({
+                    "version": v,
+                    "published_at": t,
+                })).collect::<Vec<_>>(),
+                "total": versions.len(),
+            })))
+        }
+        None => Err(McpRegError::NotFound(format!("{owner}/{name}"))),
+    }
+}
+
 /// GET /api/v1/servers/:owner/:name/similar — find similar servers
 pub async fn similar_servers(
     State(db): State<DbState>,

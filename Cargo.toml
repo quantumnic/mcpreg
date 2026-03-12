@@ -1,6 +1,6 @@
 [package]
 name = "mcpreg"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "Open source registry and marketplace for MCP (Model Context Protocol) servers"
 license = "MIT"
@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 axum = "0.7"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 dirs = "5"
 reqwest = { version = "0.12", features = ["json"] }
 rusqlite = { version = "0.31", features = ["bundled"] }

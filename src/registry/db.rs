@@ -52,6 +52,17 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_servers_downloads ON servers(downloads DESC);
             CREATE INDEX IF NOT EXISTS idx_servers_category ON servers(category);
 
+            CREATE TABLE IF NOT EXISTS server_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner TEXT NOT NULL,
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                published_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(owner, name, version)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_versions_server ON server_versions(owner, name);
+
             CREATE TABLE IF NOT EXISTS api_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 key_hash TEXT NOT NULL UNIQUE,
@@ -87,6 +98,19 @@ impl Database {
         if !has_prompts {
             self.conn.execute_batch("ALTER TABLE servers ADD COLUMN prompts TEXT NOT NULL DEFAULT '[]'")?;
         }
+
+        // Create server_versions table if missing (for databases created before this version)
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS server_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner TEXT NOT NULL,
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                published_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(owner, name, version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_versions_server ON server_versions(owner, name);"
+        )?;
 
         Ok(())
     }
@@ -133,7 +157,30 @@ impl Database {
                 entry.downloads,
             ],
         )?;
+        // Track version history
+        let _ = self.conn.execute(
+            "INSERT OR IGNORE INTO server_versions (owner, name, version) VALUES (?1, ?2, ?3)",
+            params![entry.owner, entry.name, entry.version],
+        );
+
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Get version history for a server, newest first.
+    pub fn get_version_history(&self, owner: &str, name: &str) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT version, published_at FROM server_versions
+             WHERE owner = ?1 AND name = ?2
+             ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map(params![owner, name], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut versions = Vec::new();
+        for row in rows {
+            versions.push(row?);
+        }
+        Ok(versions)
     }
 
     /// Multi-word search: splits query on whitespace, all terms must match (AND semantics).
@@ -610,6 +657,42 @@ mod tests {
         db.upsert_server(&test_entry("b", "s2")).unwrap();
         assert_eq!(db.count_by_transport("stdio").unwrap(), 2);
         assert_eq!(db.count_by_transport("sse").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_version_history_tracked() {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = test_entry("alice", "tool");
+        entry.version = "1.0.0".into();
+        db.upsert_server(&entry).unwrap();
+        entry.version = "1.1.0".into();
+        db.upsert_server(&entry).unwrap();
+        entry.version = "2.0.0".into();
+        db.upsert_server(&entry).unwrap();
+
+        let history = db.get_version_history("alice", "tool").unwrap();
+        assert_eq!(history.len(), 3);
+        // Newest first
+        assert_eq!(history[0].0, "2.0.0");
+        assert_eq!(history[1].0, "1.1.0");
+        assert_eq!(history[2].0, "1.0.0");
+    }
+
+    #[test]
+    fn test_version_history_idempotent() {
+        let db = Database::open_in_memory().unwrap();
+        let entry = test_entry("alice", "tool");
+        db.upsert_server(&entry).unwrap();
+        db.upsert_server(&entry).unwrap(); // same version again
+        let history = db.get_version_history("alice", "tool").unwrap();
+        assert_eq!(history.len(), 1, "Duplicate versions should not create entries");
+    }
+
+    #[test]
+    fn test_version_history_empty() {
+        let db = Database::open_in_memory().unwrap();
+        let history = db.get_version_history("nobody", "nothing").unwrap();
+        assert!(history.is_empty());
     }
 
     #[test]
