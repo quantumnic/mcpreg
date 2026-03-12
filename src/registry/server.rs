@@ -65,6 +65,8 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/tools", axum::routing::get(routes::tools_index))
         .route("/api/v1/categories", axum::routing::get(routes::categories))
         .route("/api/v1/prompts", axum::routing::get(routes::prompts_index))
+        .route("/api/v1/trending", axum::routing::get(routes::trending))
+        .route("/api/v1/graph", axum::routing::get(routes::tool_graph))
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -1541,5 +1543,182 @@ mod search_suggestions_tests {
         let suggestions = body["suggestions"].as_array();
         assert!(suggestions.is_some(), "Should have suggestions for typo");
         assert!(!suggestions.unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod trending_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_trending_default() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/trending")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let trending = result["trending"].as_array().unwrap();
+        assert!(!trending.is_empty());
+        assert!(trending.len() <= 15);
+        // First should have highest downloads
+        if trending.len() >= 2 {
+            let dl0 = trending[0]["downloads"].as_i64().unwrap();
+            let dl1 = trending[1]["downloads"].as_i64().unwrap();
+            assert!(dl0 >= dl1, "Should be sorted by downloads desc");
+        }
+        // Each item should have rank
+        assert_eq!(trending[0]["rank"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_api_trending_with_limit() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/trending?limit=3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["trending"].as_array().unwrap().len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_api_trending_with_category() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/trending?category=database")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let trending = result["trending"].as_array().unwrap();
+        for item in trending {
+            let cat = item["category"].as_str().unwrap().to_lowercase();
+            assert!(cat.contains("database"), "Expected database category, got {cat}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_trending_with_transport() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/trending?transport=stdio")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let trending = result["trending"].as_array().unwrap();
+        assert!(!trending.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod graph_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_graph_default() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/graph")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total_edges"].as_u64().unwrap() > 0);
+        assert!(result["total_nodes"].as_u64().unwrap() > 0);
+        let edges = result["edges"].as_array().unwrap();
+        for edge in edges {
+            assert!(edge["shared_count"].as_u64().unwrap() >= 1);
+            assert!(!edge["shared_tools"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_graph_min_shared() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/graph?min_shared=2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let edges = result["edges"].as_array().unwrap();
+        for edge in edges {
+            assert!(edge["shared_count"].as_u64().unwrap() >= 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_graph_with_limit() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/graph?limit=5")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total_edges"].as_u64().unwrap() <= 5);
+    }
+
+    #[tokio::test]
+    async fn test_api_graph_sorted_by_shared_count() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/graph")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let edges = result["edges"].as_array().unwrap();
+        if edges.len() >= 2 {
+            let c0 = edges[0]["shared_count"].as_u64().unwrap();
+            let c1 = edges[1]["shared_count"].as_u64().unwrap();
+            assert!(c0 >= c1, "Edges should be sorted by shared_count desc");
+        }
     }
 }

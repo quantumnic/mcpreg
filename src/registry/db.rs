@@ -236,12 +236,15 @@ impl Database {
             let idx_like = param_values.len() + 1;
             param_values.push(pattern);
             score_parts.push(format!(
-                "(CASE WHEN name = ?{idx_exact} THEN 200 ELSE 0 END \
+                "(CASE WHEN LOWER(name) = LOWER(?{idx_exact}) THEN 300 ELSE 0 END \
+                 + CASE WHEN LOWER(owner) = LOWER(?{idx_exact}) THEN 250 ELSE 0 END \
+                 + CASE WHEN LOWER(owner || '/' || name) = LOWER(?{idx_exact}) THEN 500 ELSE 0 END \
                  + CASE WHEN name LIKE ?{idx_like} ESCAPE '\\' THEN 100 ELSE 0 END \
                  + CASE WHEN owner LIKE ?{idx_like} ESCAPE '\\' THEN 50 ELSE 0 END \
                  + CASE WHEN tools LIKE ?{idx_like} ESCAPE '\\' THEN 40 ELSE 0 END \
                  + CASE WHEN category LIKE ?{idx_like} ESCAPE '\\' THEN 20 ELSE 0 END \
                  + CASE WHEN tags LIKE ?{idx_like} ESCAPE '\\' THEN 15 ELSE 0 END \
+                 + CASE WHEN author LIKE ?{idx_like} ESCAPE '\\' THEN 12 ELSE 0 END \
                  + CASE WHEN description LIKE ?{idx_like} ESCAPE '\\' THEN 10 ELSE 0 END)"
             ));
         }
@@ -1419,5 +1422,89 @@ mod tags_tests {
         let results = db.search("helper production").unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].owner, "alice");
+    }
+}
+
+#[cfg(test)]
+mod improved_search_tests {
+    use super::*;
+
+    fn make_entry(owner: &str, name: &str, tools: Vec<&str>, downloads: i64) -> crate::api::types::ServerEntry {
+        crate::api::types::ServerEntry {
+            id: None,
+            owner: owner.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: format!("Server {name} by {owner}"),
+            author: owner.into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: tools.into_iter().map(String::from).collect(),
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            downloads,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_search_exact_name_ranks_first() {
+        let db = Database::open_in_memory().unwrap();
+        // Insert a server named "git" and one with "git" in description
+        db.upsert_server(&make_entry("org", "git", vec![], 10)).unwrap();
+        db.upsert_server(&{
+            let mut e = make_entry("org", "git-tool", vec![], 100);
+            e.description = "Advanced git operations".into();
+            e
+        }).unwrap();
+
+        let results = db.search("git").unwrap();
+        assert!(!results.is_empty());
+        // Exact name match "git" should rank first despite fewer downloads
+        assert_eq!(results[0].name, "git");
+    }
+
+    #[test]
+    fn test_search_owner_and_name_multi_word() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("alice", "tool", vec![], 10)).unwrap();
+        db.upsert_server(&make_entry("bob", "tool", vec![], 100)).unwrap();
+
+        // Multi-word search: "alice tool" should match alice's server
+        let results = db.search("alice tool").unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].owner, "alice");
+    }
+
+    #[test]
+    fn test_search_author_boost() {
+        let db = Database::open_in_memory().unwrap();
+        let mut e1 = make_entry("org1", "s1", vec![], 10);
+        e1.author = "Anthropic".into();
+        db.upsert_server(&e1).unwrap();
+
+        let mut e2 = make_entry("org2", "s2", vec![], 10);
+        e2.description = "Uses Anthropic's models".into();
+        db.upsert_server(&e2).unwrap();
+
+        let results = db.search("Anthropic").unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_search_tag_scoring() {
+        let db = Database::open_in_memory().unwrap();
+        let mut e = make_entry("dev", "tagged", vec![], 10);
+        e.tags = vec!["llm".into(), "production".into()];
+        db.upsert_server(&e).unwrap();
+
+        let results = db.search("llm").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "tagged");
     }
 }

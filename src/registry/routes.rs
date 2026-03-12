@@ -625,6 +625,144 @@ pub async fn validate_entry(
     })))
 }
 
+/// GET /api/v1/trending — top servers by downloads with optional filters
+pub async fn trending(
+    State(db): State<DbState>,
+    Query(params): Query<TrendingQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let limit = params.limit.unwrap_or(15).min(100);
+    let db = db.lock().await;
+    let (mut servers, _) = db.list_servers(1, 1000)?;
+
+    // Sort by downloads descending
+    servers.sort_by(|a, b| b.downloads.cmp(&a.downloads));
+
+    // Category filter
+    if let Some(ref cat) = params.category {
+        let cat_lower = cat.to_lowercase();
+        servers.retain(|s| {
+            crate::registry::seed::server_category(&s.owner, &s.name)
+                .to_lowercase()
+                .contains(&cat_lower)
+        });
+    }
+
+    // Transport filter
+    if let Some(ref transport) = params.transport {
+        let t_lower = transport.to_lowercase();
+        servers.retain(|s| s.transport.to_lowercase() == t_lower);
+    }
+
+    servers.truncate(limit);
+
+    let items: Vec<serde_json::Value> = servers
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            serde_json::json!({
+                "rank": i + 1,
+                "owner": s.owner,
+                "name": s.name,
+                "full_name": s.full_name(),
+                "description": s.description,
+                "downloads": s.downloads,
+                "category": crate::registry::seed::server_category(&s.owner, &s.name),
+                "transport": s.transport,
+                "tools_count": s.tools.len(),
+                "version": s.version,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "trending": items,
+        "total": items.len(),
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct TrendingQuery {
+    pub limit: Option<usize>,
+    pub category: Option<String>,
+    pub transport: Option<String>,
+}
+
+/// GET /api/v1/graph — tool-sharing graph between servers
+pub async fn tool_graph(
+    State(db): State<DbState>,
+    Query(params): Query<GraphQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let min_shared = params.min_shared.unwrap_or(1);
+    let limit = params.limit.unwrap_or(50).min(200);
+
+    let db = db.lock().await;
+    let (servers, _) = db.list_servers(1, 1000)?;
+
+    // Build adjacency: pairs of servers that share tools
+    let mut edges: Vec<serde_json::Value> = Vec::new();
+
+    for i in 0..servers.len() {
+        if edges.len() >= limit {
+            break;
+        }
+        let tools_i: std::collections::HashSet<&str> =
+            servers[i].tools.iter().map(|s| s.as_str()).collect();
+        if tools_i.is_empty() {
+            continue;
+        }
+
+        for j in (i + 1)..servers.len() {
+            let tools_j: std::collections::HashSet<&str> =
+                servers[j].tools.iter().map(|s| s.as_str()).collect();
+            let shared: Vec<&str> = tools_i.intersection(&tools_j).copied().collect();
+
+            if shared.len() >= min_shared {
+                edges.push(serde_json::json!({
+                    "server_a": servers[i].full_name(),
+                    "server_b": servers[j].full_name(),
+                    "shared_tools": shared,
+                    "shared_count": shared.len(),
+                }));
+                if edges.len() >= limit {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Sort by shared count descending
+    edges.sort_by(|a, b| {
+        b["shared_count"]
+            .as_u64()
+            .unwrap_or(0)
+            .cmp(&a["shared_count"].as_u64().unwrap_or(0))
+    });
+
+    // Build node list
+    let mut nodes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for edge in &edges {
+        if let Some(a) = edge["server_a"].as_str() {
+            nodes.insert(a.to_string());
+        }
+        if let Some(b) = edge["server_b"].as_str() {
+            nodes.insert(b.to_string());
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "nodes": nodes,
+        "edges": edges,
+        "total_edges": edges.len(),
+        "total_nodes": nodes.len(),
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct GraphQuery {
+    pub min_shared: Option<usize>,
+    pub limit: Option<usize>,
+}
+
 /// PATCH /api/v1/servers/:owner/:name — partial update
 pub async fn patch_server(
     State(db): State<DbState>,

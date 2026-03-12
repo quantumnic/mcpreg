@@ -336,6 +336,27 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show trending / most popular MCP servers
+    Trending {
+        /// Maximum number of results (default: 15)
+        #[arg(short = 'n', long, default_value = "15")]
+        limit: usize,
+        /// Filter by category (e.g. "database", "search")
+        #[arg(short, long)]
+        category: Option<String>,
+        /// Filter by transport type (stdio, sse, streamable-http)
+        #[arg(long)]
+        transport: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Quick registry overview (servers, tools, categories, top downloads)
+    Summary {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -425,6 +446,10 @@ async fn main() {
             rt.block_on(commands::health::run(json))
         }
         Commands::History { limit, json } => commands::history::run(limit, json),
+        Commands::Trending { limit, category, transport, json } => {
+            commands::trending::run(limit, category.as_deref(), transport.as_deref(), json)
+        }
+        Commands::Summary { json } => commands::summary::run(json),
         Commands::Audit { json } => commands::audit::run(json),
         Commands::Completions { shell } => commands::completions::run(shell),
         Commands::Serve { bind, db } => {
