@@ -49,6 +49,7 @@ pub fn build_router(db_state: DbState) -> Router {
             axum::routing::get(routes::similar_servers),
         )
         .route("/api/v1/servers", axum::routing::get(routes::list_servers))
+        .route("/api/v1/servers/batch", axum::routing::post(routes::batch_get_servers))
         .route("/api/v1/publish", axum::routing::post(routes::publish))
         .route("/api/v1/stats", axum::routing::get(routes::stats))
         .route("/api/v1/tools", axum::routing::get(routes::tools_index))
@@ -829,6 +830,67 @@ mod improvement_tests {
                 s.full_name()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_search_with_transport_filter() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&transport=stdio")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(search.total > 0);
+        for s in &search.servers {
+            assert_eq!(s.transport, "stdio", "Expected stdio transport");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_batch_get_servers() {
+        let app = seeded_app().await;
+        let body_json = serde_json::json!({
+            "servers": [
+                "modelcontextprotocol/filesystem",
+                "modelcontextprotocol/git",
+                "nobody/nothing"
+            ]
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/servers/batch")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body_json).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["total"].as_u64().unwrap(), 2);
+        assert_eq!(result["not_found"].as_array().unwrap().len(), 1);
+        assert_eq!(result["not_found"][0], "nobody/nothing");
+    }
+
+    #[tokio::test]
+    async fn test_batch_get_empty() {
+        let app = seeded_app().await;
+        let body_json = serde_json::json!({"servers": []});
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/servers/batch")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body_json).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["total"].as_u64().unwrap(), 0);
     }
 
     #[tokio::test]

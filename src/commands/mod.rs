@@ -1,6 +1,7 @@
 pub mod browse;
 pub mod compare;
 pub mod config_cmd;
+pub mod count;
 pub mod doctor;
 pub mod export;
 pub mod info;
@@ -9,6 +10,7 @@ pub mod install;
 pub mod list;
 pub mod outdated;
 pub mod publish;
+pub mod random;
 pub mod search;
 pub mod similar;
 pub mod stats;

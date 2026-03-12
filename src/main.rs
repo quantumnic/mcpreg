@@ -60,6 +60,9 @@ enum Commands {
         /// Filter by tool name (only show servers that expose this tool)
         #[arg(short = 't', long)]
         tool: Option<String>,
+        /// Filter by transport type (stdio, sse, streamable-http)
+        #[arg(long)]
+        transport: Option<String>,
     },
     /// Install an MCP server and add it to claude_desktop_config.json
     Install {
@@ -158,6 +161,24 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Discover a random MCP server
+    Random {
+        /// Filter by category (e.g. "database")
+        #[arg(short, long)]
+        category: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Quick server counts (by total, transport, category, or owner)
+    Count {
+        /// Group by: total, transport, category, owner
+        #[arg(default_value = "total")]
+        by: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show which installed servers have newer versions available
     Outdated {
         /// Output as JSON
@@ -222,7 +243,8 @@ async fn main() {
             offline,
             min_downloads,
             tool,
-        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, min_downloads, tool.as_deref()).await,
+            transport,
+        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, min_downloads, tool.as_deref(), transport.as_deref()).await,
         Commands::Install { server } => commands::install::run(&server).await,
         Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
@@ -238,6 +260,8 @@ async fn main() {
         Commands::Tags { json } => commands::tags::run(json),
         Commands::Export { output } => commands::export::run(output.as_deref()),
         Commands::Similar { server, limit, json } => commands::similar::run(&server, limit, json),
+        Commands::Random { category, json } => commands::random::run(category.as_deref(), json),
+        Commands::Count { by, json } => commands::count::run(Some(&by), json),
         Commands::Outdated { json } => commands::outdated::run(json),
         Commands::Update { server } => run_update(server.as_deref()).await,
         Commands::Init { path } => commands::init::run(path.as_deref()),

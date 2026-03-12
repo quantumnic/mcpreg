@@ -15,6 +15,7 @@ pub async fn run(
     offline: bool,
     min_downloads: Option<i64>,
     tool_filter: Option<&str>,
+    transport_filter: Option<&str>,
 ) -> Result<()> {
     let mut servers = if offline {
         // Search local database directly
@@ -68,6 +69,12 @@ pub async fn run(
         servers.retain(|s| {
             s.tools.iter().any(|t| t.to_lowercase().contains(&tool_lower))
         });
+    }
+
+    // Transport filter
+    if let Some(transport) = transport_filter {
+        let t_lower = transport.to_lowercase();
+        servers.retain(|s| s.transport.to_lowercase() == t_lower);
     }
 
     // Client-side sorting

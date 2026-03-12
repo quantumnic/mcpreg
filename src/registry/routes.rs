@@ -18,6 +18,7 @@ pub struct SearchQuery {
     pub limit: Option<usize>,
     pub min_downloads: Option<i64>,
     pub tool: Option<String>,
+    pub transport: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +55,12 @@ pub async fn search(
         servers.retain(|s| {
             s.tools.iter().any(|t| t.to_lowercase().contains(&tool_lower))
         });
+    }
+
+    // Server-side transport filter
+    if let Some(ref transport) = params.transport {
+        let t_lower = transport.to_lowercase();
+        servers.retain(|s| s.transport.to_lowercase() == t_lower);
     }
 
     // Server-side sorting
@@ -305,6 +312,47 @@ pub async fn tools_index(
 pub struct ToolsQuery {
     pub q: Option<String>,
     pub limit: Option<usize>,
+}
+
+/// POST /api/v1/servers/batch — fetch multiple servers by owner/name pairs
+pub async fn batch_get_servers(
+    State(db): State<DbState>,
+    Json(body): Json<BatchRequest>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    if body.servers.is_empty() {
+        return Ok(Json(serde_json::json!({"servers": [], "total": 0, "not_found": []})));
+    }
+    if body.servers.len() > 50 {
+        return Err(McpRegError::Validation("Maximum 50 servers per batch request".into()));
+    }
+
+    let db = db.lock().await;
+    let mut found = Vec::new();
+    let mut not_found = Vec::new();
+
+    for ref_str in &body.servers {
+        let parts: Vec<&str> = ref_str.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            not_found.push(ref_str.clone());
+            continue;
+        }
+        match db.get_server(parts[0], parts[1])? {
+            Some(entry) => found.push(entry),
+            None => not_found.push(ref_str.clone()),
+        }
+    }
+
+    let total = found.len();
+    Ok(Json(serde_json::json!({
+        "servers": found,
+        "total": total,
+        "not_found": not_found,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct BatchRequest {
+    pub servers: Vec<String>,
 }
 
 /// GET /api/v1/prompts — list all unique prompts across the registry
