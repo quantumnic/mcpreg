@@ -2007,6 +2007,42 @@ impl Database {
         Ok(owners)
     }
 
+    /// List servers ordered by most recently updated.
+    pub fn recently_updated(&self, limit: usize) -> Result<Vec<ServerEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, owner, name, version, description, author, license, repository,
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+             FROM servers ORDER BY updated_at DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], row_mapper)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?.into_entry());
+        }
+        Ok(entries)
+    }
+
+    /// Get recent version publications across all servers, newest first.
+    pub fn recent_versions(&self, limit: usize) -> Result<Vec<(String, String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT owner, name, version, published_at FROM server_versions
+             ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut versions = Vec::new();
+        for row in rows {
+            versions.push(row?);
+        }
+        Ok(versions)
+    }
+
     /// Export all servers as a Vec (for full registry dump).
     pub fn export_all(&self) -> Result<Vec<ServerEntry>> {
         let mut stmt = self.conn.prepare(

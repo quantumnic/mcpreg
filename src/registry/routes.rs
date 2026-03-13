@@ -1088,6 +1088,24 @@ pub async fn openapi() -> Json<serde_json::Value> {
                     ]
                 }
             },
+            "/api/v1/changelog": {
+                "get": {
+                    "summary": "Recent version publications across the registry",
+                    "tags": ["Analytics"],
+                    "parameters": [
+                        {"name": "limit", "in": "query", "description": "Max entries (default 25, max 100)"},
+                    ]
+                }
+            },
+            "/api/v1/recently-updated": {
+                "get": {
+                    "summary": "Servers ordered by most recently updated",
+                    "tags": ["Discovery"],
+                    "parameters": [
+                        {"name": "limit", "in": "query", "description": "Max results (default 20, max 100)"},
+                    ]
+                }
+            },
         }
     }))
 }
@@ -1336,4 +1354,68 @@ pub async fn search_any(
     let servers = db.search_any(&query)?;
     let total = servers.len();
     Ok(Json(SearchResponse { servers, total, suggestions: None }))
+}
+
+/// GET /api/v1/changelog — recent version publications across the registry
+pub async fn changelog(
+    State(db): State<DbState>,
+    Query(params): Query<ChangelogQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let limit = params.limit.unwrap_or(25).min(100);
+    let db = db.lock().await;
+    let versions = db.recent_versions(limit)?;
+    let items: Vec<serde_json::Value> = versions
+        .iter()
+        .map(|(owner, name, version, published_at)| {
+            serde_json::json!({
+                "server": format!("{owner}/{name}"),
+                "version": version,
+                "published_at": published_at,
+            })
+        })
+        .collect();
+    let total = items.len();
+    Ok(Json(serde_json::json!({
+        "changelog": items,
+        "total": total,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct ChangelogQuery {
+    pub limit: Option<usize>,
+}
+
+/// GET /api/v1/recently-updated — servers ordered by update time
+pub async fn recently_updated(
+    State(db): State<DbState>,
+    Query(params): Query<RecentlyUpdatedQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let limit = params.limit.unwrap_or(20).min(100);
+    let db = db.lock().await;
+    let servers = db.recently_updated(limit)?;
+    let items: Vec<serde_json::Value> = servers
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "owner": s.owner,
+                "name": s.name,
+                "full_name": s.full_name(),
+                "version": s.version,
+                "description": s.description,
+                "updated_at": s.updated_at,
+                "downloads": s.downloads,
+            })
+        })
+        .collect();
+    let total = items.len();
+    Ok(Json(serde_json::json!({
+        "servers": items,
+        "total": total,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct RecentlyUpdatedQuery {
+    pub limit: Option<usize>,
 }

@@ -82,6 +82,8 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/export", axum::routing::get(routes::export_registry))
         .route("/api/v1/owners", axum::routing::get(routes::list_owners))
         .route("/api/v1/search/any", axum::routing::get(routes::search_any))
+        .route("/api/v1/changelog", axum::routing::get(routes::changelog))
+        .route("/api/v1/recently-updated", axum::routing::get(routes::recently_updated))
         .route(
             "/api/v1/servers/batch/delete",
             axum::routing::delete(routes::batch_delete_servers),
@@ -2656,5 +2658,183 @@ mod export_owners_searchany_tests {
         assert!(paths.contains_key("/api/v1/export"), "Should document /export");
         assert!(paths.contains_key("/api/v1/owners"), "Should document /owners");
         assert!(paths.contains_key("/api/v1/search/any"), "Should document /search/any");
+    }
+}
+
+#[cfg(test)]
+mod changelog_and_recent_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    async fn app_with_versions() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = ServerEntry {
+            id: None,
+            owner: "dev".into(),
+            name: "toolbox".into(),
+            version: "1.0.0".into(),
+            description: "Dev toolbox".into(),
+            author: "dev".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["run".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+        entry.version = "1.1.0".into();
+        db.upsert_server(&entry).unwrap();
+        entry.version = "2.0.0".into();
+        db.upsert_server(&entry).unwrap();
+
+        let mut entry2 = ServerEntry {
+            id: None,
+            owner: "dev".into(),
+            name: "helper".into(),
+            version: "0.1.0".into(),
+            description: "Helper tool".into(),
+            author: "dev".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "python".into(),
+            args: vec!["-m".into(), "helper".into()],
+            transport: "stdio".into(),
+            tools: vec!["assist".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            downloads: 10,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry2).unwrap();
+        entry2.version = "0.2.0".into();
+        db.upsert_server(&entry2).unwrap();
+
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_changelog_endpoint() {
+        let app = app_with_versions().await;
+        let req = Request::builder()
+            .uri("/api/v1/changelog")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().unwrap() >= 5); // 3 toolbox + 2 helper versions
+        let changelog = result["changelog"].as_array().unwrap();
+        // Most recent first
+        assert!(changelog[0]["version"].is_string());
+        assert!(changelog[0]["server"].is_string());
+        assert!(changelog[0]["published_at"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_changelog_with_limit() {
+        let app = app_with_versions().await;
+        let req = Request::builder()
+            .uri("/api/v1/changelog?limit=2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["changelog"].as_array().unwrap().len() <= 2);
+    }
+
+    #[tokio::test]
+    async fn test_changelog_empty_db() {
+        let db = Database::open_in_memory().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        let app = build_router(db_state);
+
+        let req = Request::builder()
+            .uri("/api/v1/changelog")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["total"].as_u64().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_recently_updated_endpoint() {
+        let app = app_with_versions().await;
+        let req = Request::builder()
+            .uri("/api/v1/recently-updated")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().unwrap() >= 2);
+        let servers = result["servers"].as_array().unwrap();
+        assert!(servers[0]["full_name"].is_string());
+        assert!(servers[0]["version"].is_string());
+        assert!(servers[0]["updated_at"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_recently_updated_with_limit() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/recently-updated?limit=3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["servers"].as_array().unwrap().len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_openapi_includes_changelog() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/openapi")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let paths = result["paths"].as_object().unwrap();
+        assert!(paths.contains_key("/api/v1/changelog"), "OpenAPI should document /changelog");
+        assert!(paths.contains_key("/api/v1/recently-updated"), "OpenAPI should document /recently-updated");
     }
 }

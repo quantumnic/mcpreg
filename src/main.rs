@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 mod api;
 mod commands;
 mod config;
@@ -190,6 +192,12 @@ enum Commands {
     },
     /// Show registry statistics (total servers, downloads, top servers)
     Stats {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show mcpreg system status (version, DB, config, counts)
+    Status {
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -483,6 +491,7 @@ async fn main() {
             commands::validate::run(manifest.as_deref(), json)
         }
         Commands::Stats { json } => commands::stats::run(json),
+        Commands::Status { json } => commands::status::run(json),
         Commands::Changelog { server, from, to, json } => {
             commands::changelog::run(&server, from.as_deref(), to.as_deref(), json)
         }

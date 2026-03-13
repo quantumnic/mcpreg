@@ -29,6 +29,7 @@ pub mod recommend;
 pub mod search;
 pub mod similar;
 pub mod stats;
+pub mod status;
 pub mod suggest;
 pub mod summary;
 pub mod tags;

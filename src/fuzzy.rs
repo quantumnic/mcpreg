@@ -49,6 +49,78 @@ pub fn contains_substring(haystack: &str, needle: &str) -> bool {
     haystack.to_lowercase().contains(&needle.to_lowercase())
 }
 
+/// Compute Jaro similarity between two strings (case-insensitive).
+/// Returns a value between 0.0 (no similarity) and 1.0 (identical).
+pub fn jaro_similarity(a: &str, b: &str) -> f64 {
+    let a: Vec<char> = a.to_lowercase().chars().collect();
+    let b: Vec<char> = b.to_lowercase().chars().collect();
+
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+
+    let match_distance = (a.len().max(b.len()) / 2).saturating_sub(1);
+
+    let mut a_matched = vec![false; a.len()];
+    let mut b_matched = vec![false; b.len()];
+    let mut matches = 0.0_f64;
+    let mut transpositions = 0.0_f64;
+
+    for (i, &ac) in a.iter().enumerate() {
+        let start = i.saturating_sub(match_distance);
+        let end = (i + match_distance + 1).min(b.len());
+        for j in start..end {
+            if !b_matched[j] && ac == b[j] {
+                a_matched[i] = true;
+                b_matched[j] = true;
+                matches += 1.0;
+                break;
+            }
+        }
+    }
+
+    if matches == 0.0 {
+        return 0.0;
+    }
+
+    let mut k = 0;
+    for (i, &matched) in a_matched.iter().enumerate() {
+        if !matched {
+            continue;
+        }
+        while !b_matched[k] {
+            k += 1;
+        }
+        if a[i] != b[k] {
+            transpositions += 1.0;
+        }
+        k += 1;
+    }
+
+    (matches / a.len() as f64
+        + matches / b.len() as f64
+        + (matches - transpositions / 2.0) / matches)
+        / 3.0
+}
+
+/// Compute Jaro-Winkler similarity (case-insensitive).
+/// Boosts score for common prefixes. Returns 0.0..1.0.
+pub fn jaro_winkler(a: &str, b: &str) -> f64 {
+    let jaro = jaro_similarity(a, b);
+    let a_lower = a.to_lowercase();
+    let b_lower = b.to_lowercase();
+    let prefix_len = a_lower
+        .chars()
+        .zip(b_lower.chars())
+        .take(4)
+        .take_while(|(ac, bc)| ac == bc)
+        .count();
+    jaro + (prefix_len as f64 * 0.1 * (1.0 - jaro))
+}
+
 /// Compute a combined fuzzy score (lower is better, 0 = exact match).
 /// Returns None if the candidate is too far from the query.
 ///
@@ -85,7 +157,8 @@ pub fn fuzzy_score(query: &str, candidate: &str, max_distance: usize) -> Option<
 }
 
 /// Find the closest matches for a query from a list of candidates.
-/// Uses combined fuzzy scoring: substring > subsequence > edit distance.
+/// Uses combined fuzzy scoring: substring > subsequence > edit distance,
+/// with a Jaro-Winkler fallback for candidates that are close but exceed edit distance.
 /// Returns candidates sorted by score (best first).
 pub fn suggest(query: &str, candidates: &[String], max_distance: usize) -> Vec<(String, usize)> {
     let mut matches: Vec<(String, usize)> = candidates
@@ -99,7 +172,18 @@ pub fn suggest(query: &str, candidates: &[String], max_distance: usize) -> Vec<(
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (Some(a), None) => Some(a),
                 (None, Some(b)) => Some(b),
-                (None, None) => None,
+                (None, None) => {
+                    // Jaro-Winkler fallback: include if similarity >= 0.8
+                    let jw_full = jaro_winkler(query, c);
+                    let jw_name = jaro_winkler(query, name_part);
+                    let jw = jw_full.max(jw_name);
+                    if jw >= 0.8 {
+                        // Convert similarity to a score (higher similarity = lower score)
+                        Some(max_distance + 1 + ((1.0 - jw) * 10.0) as usize)
+                    } else {
+                        None
+                    }
+                }
             };
             best.map(|score| (c.clone(), score))
         })
@@ -299,5 +383,59 @@ mod tests {
         assert_eq!(levenshtein("cat", "bat"), 1);
         assert_eq!(levenshtein("cat", "cats"), 1);
         assert_eq!(levenshtein("cat", "at"), 1);
+    }
+
+    #[test]
+    fn test_jaro_similarity_identical() {
+        let s = jaro_similarity("hello", "hello");
+        assert!((s - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_jaro_similarity_empty() {
+        assert!((jaro_similarity("", "") - 1.0).abs() < f64::EPSILON);
+        assert!((jaro_similarity("a", "")).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_jaro_similarity_different() {
+        let s = jaro_similarity("abc", "xyz");
+        assert!(s < 0.5, "Very different strings should have low similarity");
+    }
+
+    #[test]
+    fn test_jaro_similarity_similar() {
+        let s = jaro_similarity("filesystem", "filesytem");
+        assert!(s > 0.9, "One-char typo should have high similarity: {s}");
+    }
+
+    #[test]
+    fn test_jaro_winkler_boosts_prefix() {
+        let jaro = jaro_similarity("filesystem", "filesytem");
+        let jw = jaro_winkler("filesystem", "filesytem");
+        assert!(jw >= jaro, "Jaro-Winkler should be >= Jaro for shared prefix");
+    }
+
+    #[test]
+    fn test_jaro_winkler_identical() {
+        let jw = jaro_winkler("hello", "hello");
+        assert!((jw - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_jaro_winkler_case_insensitive() {
+        let jw = jaro_winkler("Hello", "hello");
+        assert!((jw - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_suggest_jaro_winkler_fallback() {
+        let candidates: Vec<String> = vec![
+            "org/postgresql-server".into(),
+            "org/something-else".into(),
+        ];
+        // "postgresql" vs "postgresql-server" - name part has good JW similarity
+        let suggestions = suggest("postgresql", &candidates, 2);
+        assert!(!suggestions.is_empty(), "JW fallback should find postgresql-server");
     }
 }
