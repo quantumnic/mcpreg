@@ -41,6 +41,8 @@ impl Database {
                 resources TEXT NOT NULL DEFAULT '[]',
                 prompts TEXT NOT NULL DEFAULT '[]',
                 tags TEXT NOT NULL DEFAULT '[]',
+                env TEXT NOT NULL DEFAULT '{}',
+                homepage TEXT NOT NULL DEFAULT '',
                 category TEXT NOT NULL DEFAULT '',
                 downloads INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -111,6 +113,28 @@ impl Database {
             self.conn.execute_batch("ALTER TABLE servers ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")?;
         }
 
+        // Add env column if missing
+        let has_env: bool = self.conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name='env'")?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !has_env {
+            self.conn.execute_batch("ALTER TABLE servers ADD COLUMN env TEXT NOT NULL DEFAULT '{}'")?;
+        }
+
+        // Add homepage column if missing
+        let has_homepage: bool = self.conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name='homepage'")?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !has_homepage {
+            self.conn.execute_batch("ALTER TABLE servers ADD COLUMN homepage TEXT NOT NULL DEFAULT ''")?;
+        }
+
         // Create server_versions table if missing (for databases created before this version)
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS server_versions (
@@ -133,11 +157,12 @@ impl Database {
         let resources_json = serde_json::to_string(&entry.resources)?;
         let prompts_json = serde_json::to_string(&entry.prompts)?;
         let tags_json = serde_json::to_string(&entry.tags)?;
+        let env_json = serde_json::to_string(&entry.env)?;
         let category = crate::registry::seed::server_category(&entry.owner, &entry.name);
 
         self.conn.execute(
-            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources, prompts, tags, category, downloads)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT(owner, name) DO UPDATE SET
                 version = excluded.version,
                 description = excluded.description,
@@ -151,6 +176,8 @@ impl Database {
                 resources = excluded.resources,
                 prompts = excluded.prompts,
                 tags = excluded.tags,
+                env = excluded.env,
+                homepage = excluded.homepage,
                 category = excluded.category,
                 updated_at = datetime('now')",
             params![
@@ -168,6 +195,8 @@ impl Database {
                 resources_json,
                 prompts_json,
                 tags_json,
+                env_json,
+                entry.homepage,
                 category,
                 entry.downloads,
             ],
@@ -252,7 +281,7 @@ impl Database {
 
         let sql = format!(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at,
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at,
                     ({score_expr} + downloads / 100) AS relevance
              FROM servers
              WHERE {where_clause}
@@ -282,7 +311,7 @@ impl Database {
         let pattern = format!("%{escaped}%");
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
              FROM servers WHERE category LIKE ?1 ORDER BY downloads DESC",
         )?;
         let rows = stmt.query_map(params![pattern], row_mapper)?;
@@ -296,7 +325,7 @@ impl Database {
     pub fn get_server(&self, owner: &str, name: &str) -> Result<Option<ServerEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
              FROM servers WHERE owner = ?1 AND name = ?2",
         )?;
         let mut rows = stmt.query_map(params![owner, name], row_mapper)?;
@@ -323,7 +352,7 @@ impl Database {
 
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
              FROM servers ORDER BY downloads DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(params![per_page as i64, offset as i64], row_mapper)?;
@@ -465,10 +494,12 @@ fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<ServerEntryRow> {
         resources: row.get::<_, String>(12)?,
         prompts: row.get::<_, String>(13)?,
         tags: row.get::<_, String>(14)?,
-        category: row.get(15)?,
-        downloads: row.get(16)?,
-        created_at: row.get(17)?,
-        updated_at: row.get(18)?,
+        env: row.get::<_, String>(15)?,
+        homepage: row.get(16)?,
+        category: row.get(17)?,
+        downloads: row.get(18)?,
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
     })
 }
 
@@ -488,6 +519,8 @@ struct ServerEntryRow {
     resources: String,
     prompts: String,
     tags: String,
+    env: String,
+    homepage: String,
     #[allow(dead_code)]
     category: String,
     downloads: i64,
@@ -513,6 +546,8 @@ impl ServerEntryRow {
             resources: serde_json::from_str(&self.resources).unwrap_or_default(),
             prompts: serde_json::from_str(&self.prompts).unwrap_or_default(),
             tags: serde_json::from_str(&self.tags).unwrap_or_default(),
+            env: serde_json::from_str(&self.env).unwrap_or_default(),
+            homepage: self.homepage,
             downloads: self.downloads,
             created_at: Some(self.created_at),
             updated_at: Some(self.updated_at),
@@ -541,6 +576,8 @@ mod tests {
             resources: vec!["file://".into()],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -785,7 +822,7 @@ impl Database {
         let pattern = format!("%{escaped}%");
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
              FROM servers WHERE LOWER(tags) LIKE LOWER(?1) ESCAPE '\\' ORDER BY downloads DESC",
         )?;
         let rows = stmt.query_map(params![pattern], row_mapper)?;
@@ -1073,6 +1110,8 @@ mod search_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads,
             created_at: None,
             updated_at: None,
@@ -1278,6 +1317,8 @@ mod tools_index_tests {
             resources: vec![],
             prompts: vec!["summarize".into(), "analyze".into()],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1341,6 +1382,8 @@ mod prompts_tests {
             resources: vec![],
             prompts: vec!["summarize".into(), "analyze".into(), "translate".into()],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1369,6 +1412,8 @@ mod prompts_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1397,6 +1442,8 @@ mod prompts_tests {
             resources: vec![],
             prompts: vec!["prompt1".into()],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1436,6 +1483,8 @@ mod tags_tests {
             resources: vec!["file://".into()],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1516,6 +1565,8 @@ mod suggest_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads,
             created_at: None,
             updated_at: None,
@@ -1604,6 +1655,8 @@ mod improved_search_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads,
             created_at: None,
             updated_at: None,
@@ -1688,6 +1741,8 @@ mod tag_tests {
             resources: vec![],
             prompts: vec![],
             tags: tags.into_iter().map(String::from).collect(),
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1794,14 +1849,14 @@ impl Database {
             let pattern = format!("%{escaped}%");
             (
                 "SELECT id, owner, name, version, description, author, license, repository,
-                        command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
+                        command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
                  FROM servers WHERE LOWER(category) LIKE LOWER(?1) ESCAPE '\\' ORDER BY RANDOM() LIMIT 1".into(),
                 vec![pattern],
             )
         } else {
             (
                 "SELECT id, owner, name, version, description, author, license, repository,
-                        command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
+                        command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
                  FROM servers ORDER BY RANDOM() LIMIT 1".into(),
                 vec![],
             )
@@ -1841,6 +1896,8 @@ mod bulk_and_count_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1931,5 +1988,239 @@ mod bulk_and_count_tests {
         db.seed_default_servers().unwrap();
         let server = db.random_server(Some("zzzznonexistent")).unwrap();
         assert!(server.is_none());
+    }
+}
+
+impl Database {
+    /// List all unique owners with their server counts, sorted by count descending.
+    pub fn list_owners(&self) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT owner, COUNT(*) FROM servers GROUP BY owner ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        })?;
+        let mut owners = Vec::new();
+        for row in rows {
+            owners.push(row?);
+        }
+        Ok(owners)
+    }
+
+    /// Export all servers as a Vec (for full registry dump).
+    pub fn export_all(&self) -> Result<Vec<ServerEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, owner, name, version, description, author, license, repository,
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+             FROM servers ORDER BY owner, name",
+        )?;
+        let rows = stmt.query_map([], row_mapper)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?.into_entry());
+        }
+        Ok(entries)
+    }
+
+    /// Search servers with OR semantics (pipe-separated terms: "postgres|sqlite|redis").
+    pub fn search_any(&self, query: &str) -> Result<Vec<ServerEntry>> {
+        let terms: Vec<&str> = query.split('|').map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut conditions = Vec::new();
+        let mut param_values: Vec<String> = Vec::new();
+
+        for term in &terms {
+            let escaped = escape_like(term);
+            let pattern = format!("%{escaped}%");
+            let idx = param_values.len() + 1;
+            param_values.push(pattern);
+            conditions.push(format!(
+                "(name LIKE ?{idx} ESCAPE '\\' OR description LIKE ?{idx} ESCAPE '\\' OR owner LIKE ?{idx} ESCAPE '\\' OR tools LIKE ?{idx} ESCAPE '\\' OR tags LIKE ?{idx} ESCAPE '\\')"
+            ));
+        }
+
+        let where_clause = conditions.join(" OR ");
+        let sql = format!(
+            "SELECT id, owner, name, version, description, author, license, repository,
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+             FROM servers
+             WHERE {where_clause}
+             ORDER BY downloads DESC
+             LIMIT 50"
+        );
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), row_mapper)?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?.into_entry());
+        }
+        Ok(entries)
+    }
+}
+
+#[cfg(test)]
+mod owners_export_tests {
+    use super::*;
+
+    #[test]
+    fn test_list_owners_empty() {
+        let db = Database::open_in_memory().unwrap();
+        let owners = db.list_owners().unwrap();
+        assert!(owners.is_empty());
+    }
+
+    #[test]
+    fn test_list_owners_with_data() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let owners = db.list_owners().unwrap();
+        assert!(!owners.is_empty());
+        // modelcontextprotocol should be top owner
+        assert_eq!(owners[0].0, "modelcontextprotocol");
+        assert!(owners[0].1 > 5, "MCP org should have many servers");
+    }
+
+    #[test]
+    fn test_list_owners_sorted_by_count() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let owners = db.list_owners().unwrap();
+        for i in 1..owners.len() {
+            assert!(owners[i - 1].1 >= owners[i].1, "Should be sorted by count desc");
+        }
+    }
+
+    #[test]
+    fn test_export_all_empty() {
+        let db = Database::open_in_memory().unwrap();
+        let servers = db.export_all().unwrap();
+        assert!(servers.is_empty());
+    }
+
+    #[test]
+    fn test_export_all_with_data() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let servers = db.export_all().unwrap();
+        let count = db.count_servers().unwrap();
+        assert_eq!(servers.len(), count);
+    }
+
+    #[test]
+    fn test_export_all_sorted_by_owner_name() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let servers = db.export_all().unwrap();
+        for i in 1..servers.len() {
+            let prev = format!("{}/{}", servers[i - 1].owner, servers[i - 1].name);
+            let curr = format!("{}/{}", servers[i].owner, servers[i].name);
+            assert!(prev <= curr, "Expected sorted order: {prev} <= {curr}");
+        }
+    }
+
+    #[test]
+    fn test_search_any_or_semantics() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let results = db.search_any("postgres|sqlite|redis").unwrap();
+        assert!(results.len() >= 3, "Should find at least 3 DB servers");
+        let names: Vec<String> = results.iter().map(|s| s.name.clone()).collect();
+        assert!(names.iter().any(|n| n.contains("postgres")));
+        assert!(names.iter().any(|n| n.contains("sqlite")));
+    }
+
+    #[test]
+    fn test_search_any_empty() {
+        let db = Database::open_in_memory().unwrap();
+        let results = db.search_any("").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_any_single_term() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let results = db.search_any("github").unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_env_field_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = ServerEntry {
+            id: None,
+            owner: "dev".into(),
+            name: "env-test".into(),
+            version: "1.0.0".into(),
+            description: "Server with env hints".into(),
+            author: "dev".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec!["index.js".into()],
+            transport: "stdio".into(),
+            tools: vec!["query".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: std::collections::HashMap::new(),
+            homepage: "https://example.com".into(),
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        entry.env.insert("API_KEY".into(), "your-api-key-here".into());
+        entry.env.insert("DATABASE_URL".into(), "postgres://localhost/db".into());
+        db.upsert_server(&entry).unwrap();
+
+        let retrieved = db.get_server("dev", "env-test").unwrap().unwrap();
+        assert_eq!(retrieved.env.len(), 2);
+        assert_eq!(retrieved.env.get("API_KEY").unwrap(), "your-api-key-here");
+        assert_eq!(retrieved.homepage, "https://example.com");
+    }
+
+    #[test]
+    fn test_homepage_field_roundtrip() {
+        let db = Database::open_in_memory().unwrap();
+        let entry = ServerEntry {
+            id: None,
+            owner: "org".into(),
+            name: "homepage-test".into(),
+            version: "1.0.0".into(),
+            description: "Has homepage".into(),
+            author: "org".into(),
+            license: "MIT".into(),
+            repository: "https://github.com/org/repo".into(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: "https://my-mcp-server.dev".into(),
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+        let retrieved = db.get_server("org", "homepage-test").unwrap().unwrap();
+        assert_eq!(retrieved.homepage, "https://my-mcp-server.dev");
+    }
+
+    #[test]
+    fn test_env_default_empty() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let server = db.get_server("modelcontextprotocol", "filesystem").unwrap().unwrap();
+        assert!(server.env.is_empty(), "Default servers should have empty env");
     }
 }

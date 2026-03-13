@@ -683,6 +683,20 @@ pub async fn validate_entry(
         warnings.push("name contains non-standard characters — use lowercase alphanumeric, hyphens, or underscores".into());
     }
 
+    // Env var hints validation
+    for key in entry.env.keys() {
+        if key.is_empty() {
+            warnings.push("env contains an empty key".into());
+        } else if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            warnings.push(format!("env key '{}' should use UPPER_SNAKE_CASE", key));
+        }
+    }
+
+    // Homepage URL validation
+    if !entry.homepage.is_empty() && !entry.homepage.starts_with("http://") && !entry.homepage.starts_with("https://") {
+        warnings.push("homepage should be a valid HTTP(S) URL".into());
+    }
+
     let valid = errors.is_empty();
 
     Ok(Json(serde_json::json!({
@@ -909,6 +923,20 @@ pub async fn patch_server(
         entry.transport = transport.to_string();
         changed.push("transport");
     }
+    if let Some(env_obj) = patch.get("env").and_then(|v| v.as_object()) {
+        let mut env_map = std::collections::HashMap::new();
+        for (k, v) in env_obj {
+            if let Some(val) = v.as_str() {
+                env_map.insert(k.clone(), val.to_string());
+            }
+        }
+        entry.env = env_map;
+        changed.push("env");
+    }
+    if let Some(homepage) = patch.get("homepage").and_then(|v| v.as_str()) {
+        entry.homepage = homepage.to_string();
+        changed.push("homepage");
+    }
 
     if changed.is_empty() {
         return Err(McpRegError::Validation("no valid fields to update".into()));
@@ -1044,6 +1072,21 @@ pub async fn openapi() -> Json<serde_json::Value> {
             },
             "/api/v1/servers/batch/delete": {
                 "delete": { "summary": "Bulk delete servers by owner/name pairs", "tags": ["Servers"] }
+            },
+            "/api/v1/export": {
+                "get": { "summary": "Full registry dump as JSON", "tags": ["System"] }
+            },
+            "/api/v1/owners": {
+                "get": { "summary": "List all owners with server counts", "tags": ["Discovery"] }
+            },
+            "/api/v1/search/any": {
+                "get": {
+                    "summary": "OR-based search with pipe-separated terms (e.g. q=postgres|sqlite|redis)",
+                    "tags": ["Servers"],
+                    "parameters": [
+                        {"name": "q", "in": "query", "description": "Pipe-separated search terms (OR matching)"},
+                    ]
+                }
             },
         }
     }))
@@ -1185,6 +1228,11 @@ pub async fn server_config_snippet(
         server_config["transport"] = serde_json::json!(entry.transport);
     }
 
+    // Include env vars if any are declared
+    if !entry.env.is_empty() {
+        server_config["env"] = serde_json::json!(entry.env);
+    }
+
     let snippet = serde_json::json!({
         "mcpServers": {
             key.clone(): server_config
@@ -1236,4 +1284,56 @@ pub async fn batch_delete_servers(
         "invalid_refs": invalid,
         "not_found_count": not_found_count,
     })))
+}
+
+/// GET /api/v1/export — full registry dump as JSON
+pub async fn export_registry(
+    State(db): State<DbState>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let servers = db.export_all()?;
+    let total = servers.len();
+    Ok(Json(serde_json::json!({
+        "servers": servers,
+        "total": total,
+        "exported_at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        "version": env!("CARGO_PKG_VERSION"),
+    })))
+}
+
+/// GET /api/v1/owners — list all owners with server counts
+pub async fn list_owners(
+    State(db): State<DbState>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let owners = db.list_owners()?;
+    let items: Vec<serde_json::Value> = owners
+        .iter()
+        .map(|(owner, count)| {
+            serde_json::json!({
+                "owner": owner,
+                "server_count": count,
+            })
+        })
+        .collect();
+    let total = items.len();
+    Ok(Json(serde_json::json!({
+        "owners": items,
+        "total": total,
+    })))
+}
+
+/// GET /api/v1/search/any — OR-based search (pipe-separated terms)
+pub async fn search_any(
+    State(db): State<DbState>,
+    Query(params): Query<SearchQuery>,
+) -> Result<Json<SearchResponse>, McpRegError> {
+    let query = params.q.unwrap_or_default();
+    let db = db.lock().await;
+    let servers = db.search_any(&query)?;
+    let total = servers.len();
+    Ok(Json(SearchResponse { servers, total, suggestions: None }))
 }

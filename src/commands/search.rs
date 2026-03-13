@@ -44,7 +44,12 @@ pub async fn run(
             }
         }
 
-        db.search(query)?
+        // Use OR search if query contains pipe character
+        if query.contains('|') {
+            db.search_any(query)?
+        } else {
+            db.search(query)?
+        }
     } else {
         let config = Config::load()?;
         let client = RegistryClient::new(&config);

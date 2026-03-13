@@ -79,6 +79,9 @@ pub fn build_router(db_state: DbState) -> Router {
             axum::routing::get(routes::server_config_snippet),
         )
         .route("/api/v1/random", axum::routing::get(routes::random_server))
+        .route("/api/v1/export", axum::routing::get(routes::export_registry))
+        .route("/api/v1/owners", axum::routing::get(routes::list_owners))
+        .route("/api/v1/search/any", axum::routing::get(routes::search_any))
         .route(
             "/api/v1/servers/batch/delete",
             axum::routing::delete(routes::batch_delete_servers),
@@ -113,6 +116,8 @@ mod tests {
             resources: vec!["file://".into()],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 1500,
             created_at: None,
             updated_at: None,
@@ -253,6 +258,8 @@ mod tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -286,6 +293,8 @@ mod tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -645,6 +654,8 @@ mod improvement_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -678,6 +689,8 @@ mod improvement_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -711,6 +724,8 @@ mod improvement_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -744,6 +759,8 @@ mod improvement_tests {
             resources: vec![],
             prompts: vec!["summarize".into(), "analyze".into()],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -947,6 +964,8 @@ mod improvement_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1035,6 +1054,8 @@ mod diff_endpoint_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 100,
             created_at: None,
             updated_at: None,
@@ -1234,6 +1255,8 @@ mod validate_and_patch_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1281,6 +1304,8 @@ mod validate_and_patch_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1323,6 +1348,8 @@ mod validate_and_patch_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1524,6 +1551,8 @@ mod search_suggestions_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -2296,6 +2325,8 @@ mod random_and_config_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -2410,5 +2441,220 @@ mod random_and_config_tests {
         assert!(paths.contains_key("/api/v1/random"), "OpenAPI should document /random");
         assert!(paths.contains_key("/api/v1/servers/{owner}/{name}/config"), "OpenAPI should document /config");
         assert!(paths.contains_key("/api/v1/servers/batch/delete"), "OpenAPI should document batch delete");
+    }
+}
+
+#[cfg(test)]
+mod export_owners_searchany_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> axum::Router {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let state = std::sync::Arc::new(tokio::sync::Mutex::new(db));
+        build_router(state)
+    }
+
+    #[tokio::test]
+    async fn test_api_export() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/export")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().unwrap() >= 30);
+        assert!(result["servers"].as_array().unwrap().len() >= 30);
+        assert!(result["exported_at"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_api_owners() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/owners")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let owners = result["owners"].as_array().unwrap();
+        assert!(!owners.is_empty());
+        // modelcontextprotocol should be present
+        assert!(owners.iter().any(|o| o["owner"] == "modelcontextprotocol"));
+        // Should have server_count field
+        assert!(owners[0]["server_count"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_api_search_any_or() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search/any?q=postgres|sqlite|redis")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().unwrap() >= 3);
+    }
+
+    #[tokio::test]
+    async fn test_api_search_any_empty() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search/any?q=")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["total"].as_u64().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_api_config_snippet_includes_env() {
+        // Create a server with env hints and verify config snippet includes them
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let mut entry = crate::api::types::ServerEntry {
+            id: None,
+            owner: "test".into(),
+            name: "env-server".into(),
+            version: "1.0.0".into(),
+            description: "Server with env".into(),
+            author: "test".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "npx".into(),
+            args: vec!["-y".into(), "test-server".into()],
+            transport: "stdio".into(),
+            tools: vec!["query".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        entry.env.insert("API_KEY".into(), "your-key-here".into());
+        db.upsert_server(&entry).unwrap();
+
+        let state = std::sync::Arc::new(tokio::sync::Mutex::new(db));
+        let app = build_router(state);
+        let req = Request::builder()
+            .uri("/api/v1/servers/test/env-server/config")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // Config snippet should include env
+        let config = &result["claude_desktop_config"]["mcpServers"]["test-env-server"];
+        assert!(config["env"].is_object(), "Config snippet should include env");
+        assert_eq!(config["env"]["API_KEY"], "your-key-here");
+    }
+
+    #[tokio::test]
+    async fn test_api_validate_env_warnings() {
+        let app = seeded_app().await;
+        let body_json = serde_json::json!({
+            "owner": "test",
+            "name": "valid-server",
+            "version": "1.0.0",
+            "command": "node",
+            "transport": "stdio",
+            "env": {"bad-key": "value"},
+            "homepage": "not-a-url",
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/validate")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body_json).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["valid"].as_bool().unwrap(), "Should be valid (warnings only)");
+        let warnings = result["warnings"].as_array().unwrap();
+        assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("UPPER_SNAKE_CASE")));
+        assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("homepage")));
+    }
+
+    #[tokio::test]
+    async fn test_api_patch_env_and_homepage() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let entry = crate::api::types::ServerEntry {
+            id: None,
+            owner: "patcher".into(),
+            name: "target".into(),
+            version: "1.0.0".into(),
+            description: "Patchable".into(),
+            author: "patcher".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+
+        let state = std::sync::Arc::new(tokio::sync::Mutex::new(db));
+        let app = build_router(state);
+        let patch_body = serde_json::json!({
+            "env": {"NEW_KEY": "new_value"},
+            "homepage": "https://example.com",
+        });
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/api/v1/servers/patcher/target")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&patch_body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let updated_fields = result["updated_fields"].as_array().unwrap();
+        assert!(updated_fields.iter().any(|f| f == "env"));
+        assert!(updated_fields.iter().any(|f| f == "homepage"));
+    }
+
+    #[tokio::test]
+    async fn test_openapi_includes_export_owners() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/openapi")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let paths = result["paths"].as_object().unwrap();
+        assert!(paths.contains_key("/api/v1/export"), "Should document /export");
+        assert!(paths.contains_key("/api/v1/owners"), "Should document /owners");
+        assert!(paths.contains_key("/api/v1/search/any"), "Should document /search/any");
     }
 }

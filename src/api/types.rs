@@ -53,25 +53,45 @@ pub struct Capabilities {
 /// Registry server entry (stored in DB / returned by API)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerEntry {
+    #[serde(default)]
     pub id: Option<i64>,
     pub owner: String,
     pub name: String,
+    #[serde(default)]
     pub version: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub author: String,
+    #[serde(default)]
     pub license: String,
+    #[serde(default)]
     pub repository: String,
+    #[serde(default)]
     pub command: String,
+    #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default = "default_transport")]
     pub transport: String,
+    #[serde(default)]
     pub tools: Vec<String>,
+    #[serde(default)]
     pub resources: Vec<String>,
     #[serde(default)]
     pub prompts: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Environment variable hints for server configuration (e.g. API keys, paths)
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    /// Optional homepage URL (separate from repository)
+    #[serde(default)]
+    pub homepage: String,
+    #[serde(default)]
     pub downloads: i64,
+    #[serde(default)]
     pub created_at: Option<String>,
+    #[serde(default)]
     pub updated_at: Option<String>,
 }
 
@@ -97,6 +117,8 @@ impl ServerEntry {
             resources: manifest.capabilities.resources.clone(),
             prompts: manifest.capabilities.prompts.clone(),
             tags: manifest.capabilities.tags.clone(),
+            env: manifest.server.env.clone(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -242,6 +264,8 @@ tools = ["tool1"]
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 42,
             created_at: None,
             updated_at: None,
@@ -348,6 +372,8 @@ prompts = ["analyze", "summarize"]
             resources: vec![],
             prompts: vec!["prompt1".into(), "prompt2".into()],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 42,
             created_at: Some("2024-01-01".into()),
             updated_at: Some("2024-01-02".into()),
@@ -403,6 +429,8 @@ mod additional_tests {
             resources: vec![],
             prompts: vec![],
             tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -483,6 +511,8 @@ mod additional_tests {
                 resources: vec![],
                 prompts: vec![],
                 tags: vec![],
+                env: Default::default(),
+                homepage: String::new(),
                 downloads: 42,
                 created_at: None,
                 updated_at: None,
