@@ -22,6 +22,9 @@ pub struct SearchQuery {
     pub author: Option<String>,
     pub owner: Option<String>,
     pub tag: Option<String>,
+    pub min_tools: Option<usize>,
+    pub has_prompts: Option<bool>,
+    pub resource: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -83,6 +86,24 @@ pub async fn search(
         let tag_lower = tag.to_lowercase();
         servers.retain(|s| {
             s.tags.iter().any(|t| t.to_lowercase().contains(&tag_lower))
+        });
+    }
+
+    // Server-side min_tools filter
+    if let Some(min) = params.min_tools {
+        servers.retain(|s| s.tools.len() >= min);
+    }
+
+    // Server-side has_prompts filter
+    if let Some(true) = params.has_prompts {
+        servers.retain(|s| !s.prompts.is_empty());
+    }
+
+    // Server-side resource filter
+    if let Some(ref resource) = params.resource {
+        let r_lower = resource.to_lowercase();
+        servers.retain(|s| {
+            s.resources.iter().any(|r| r.to_lowercase().contains(&r_lower))
         });
     }
 
@@ -399,6 +420,45 @@ pub async fn tags_index(
 
     Ok(Json(serde_json::json!({
         "tags": items,
+        "total": total,
+    })))
+}
+
+/// GET /api/v1/resources — list all unique resources across the registry
+pub async fn resources_index(
+    State(db): State<DbState>,
+    Query(params): Query<ToolsQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let all_resources = db.list_resources()?;
+
+    let mut items: Vec<serde_json::Value> = all_resources
+        .into_iter()
+        .map(|(resource, servers)| {
+            serde_json::json!({
+                "resource": resource,
+                "server_count": servers.len(),
+                "servers": servers,
+            })
+        })
+        .collect();
+
+    if let Some(ref q) = params.q {
+        let q_lower = q.to_lowercase();
+        items.retain(|item| {
+            item["resource"]
+                .as_str()
+                .map(|r| r.to_lowercase().contains(&q_lower))
+                .unwrap_or(false)
+        });
+    }
+
+    let total = items.len();
+    let limit = params.limit.unwrap_or(100).min(500);
+    items.truncate(limit);
+
+    Ok(Json(serde_json::json!({
+        "resources": items,
         "total": total,
     })))
 }
@@ -985,6 +1045,9 @@ pub async fn openapi() -> Json<serde_json::Value> {
                         {"name": "author", "in": "query", "description": "Filter by author"},
                         {"name": "owner", "in": "query", "description": "Filter by owner"},
                         {"name": "tag", "in": "query", "description": "Filter by tag"},
+                        {"name": "min_tools", "in": "query", "description": "Minimum number of tools"},
+                        {"name": "has_prompts", "in": "query", "description": "Only servers with prompts (true)"},
+                        {"name": "resource", "in": "query", "description": "Filter by resource type"},
                     ]
                 }
             },
@@ -1038,6 +1101,9 @@ pub async fn openapi() -> Json<serde_json::Value> {
             },
             "/api/v1/tags": {
                 "get": { "summary": "List all unique tags across servers", "tags": ["Discovery"] }
+            },
+            "/api/v1/resources": {
+                "get": { "summary": "List all unique resources across servers", "tags": ["Discovery"] }
             },
             "/api/v1/categories": {
                 "get": { "summary": "List servers grouped by category", "tags": ["Discovery"] }

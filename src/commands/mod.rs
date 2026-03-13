@@ -25,6 +25,8 @@ pub mod pin;
 pub mod prompts;
 pub mod publish;
 pub mod random;
+pub mod resources;
+pub mod whohas;
 pub mod recommend;
 pub mod search;
 pub mod similar;

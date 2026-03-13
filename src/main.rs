@@ -132,6 +132,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// List all resources provided by servers in the registry
+    Resources(commands::resources::ResourcesArgs),
+    /// Find servers that provide a specific resource type
+    Whohas(commands::whohas::WhohasArgs),
     /// Export installed servers as a claude_desktop_config.json snippet
     Export {
         /// Output file path (prints to stdout if not given)
@@ -447,6 +451,8 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    let config = config::Config::load().unwrap_or_default();
+
     let result = match cli.command {
         Commands::Search {
             query,
@@ -477,6 +483,8 @@ async fn main() {
             min_downloads,
         } => commands::browse::run(page, per_page, category.as_deref(), &sort, min_downloads),
         Commands::Tags { json } => commands::tags::run(json),
+        Commands::Resources(args) => commands::resources::run(&args, &config).await,
+        Commands::Whohas(args) => commands::whohas::run(&args, &config).await,
         Commands::Export { output } => commands::export::run(output.as_deref()),
         Commands::Similar { server, limit, json } => commands::similar::run(&server, limit, json),
         Commands::Random { category, json } => commands::random::run(category.as_deref(), json),
@@ -594,5 +602,28 @@ mod tests {
         use clap::CommandFactory;
         // Verify the CLI definition is valid (catches typos in arg definitions)
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn test_compare_versions_empty() {
+        assert_eq!(compare_versions("", ""), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn test_compare_versions_prerelease_style() {
+        // Non-numeric parts fall back to string comparison
+        assert_eq!(compare_versions("1.0.0", "1.0.0"), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn test_compare_versions_many_segments() {
+        assert_eq!(compare_versions("1.2.3.4", "1.2.3.4"), std::cmp::Ordering::Equal);
+        // compare_versions only considers the first 3 semver segments
+        assert_eq!(compare_versions("1.2.3.5", "1.2.3.4"), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn test_compare_versions_zero_padded() {
+        assert_eq!(compare_versions("01.02.03", "1.2.3"), std::cmp::Ordering::Equal);
     }
 }

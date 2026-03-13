@@ -66,6 +66,7 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/categories", axum::routing::get(routes::categories))
         .route("/api/v1/prompts", axum::routing::get(routes::prompts_index))
         .route("/api/v1/tags", axum::routing::get(routes::tags_index))
+        .route("/api/v1/resources", axum::routing::get(routes::resources_index))
         .route("/api/v1/trending", axum::routing::get(routes::trending))
         .route("/api/v1/graph", axum::routing::get(routes::tool_graph))
         .route("/api/v1/suggest", axum::routing::get(routes::suggest))
@@ -2836,5 +2837,164 @@ mod changelog_and_recent_tests {
         let paths = result["paths"].as_object().unwrap();
         assert!(paths.contains_key("/api/v1/changelog"), "OpenAPI should document /changelog");
         assert!(paths.contains_key("/api/v1/recently-updated"), "OpenAPI should document /recently-updated");
+    }
+}
+
+#[cfg(test)]
+mod resources_endpoint_tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    fn test_app() -> axum::Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        { let db_state = std::sync::Arc::new(tokio::sync::Mutex::new(db)); super::build_router(db_state) }
+    }
+
+    #[tokio::test]
+    async fn test_api_resources_index() {
+        let app = test_app();
+        let resp = axum::http::Request::builder()
+            .uri("/api/v1/resources")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = tower::ServiceExt::oneshot(app, resp).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert!(body["resources"].is_array());
+        assert!(body["total"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_api_resources_with_query() {
+        let app = test_app();
+        let resp = axum::http::Request::builder()
+            .uri("/api/v1/resources?q=file")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = tower::ServiceExt::oneshot(app, resp).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        let resources = body["resources"].as_array().unwrap();
+        // All returned resources should contain "file" (case-insensitive)
+        for r in resources {
+            let name = r["resource"].as_str().unwrap().to_lowercase();
+            assert!(name.contains("file"), "Resource '{}' should contain 'file'", name);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_resources_with_limit() {
+        let app = test_app();
+        let resp = axum::http::Request::builder()
+            .uri("/api/v1/resources?limit=2")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = tower::ServiceExt::oneshot(app, resp).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        let resources = body["resources"].as_array().unwrap();
+        assert!(resources.len() <= 2);
+    }
+}
+
+#[cfg(test)]
+mod search_filter_tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    fn test_app() -> axum::Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        { let db_state = std::sync::Arc::new(tokio::sync::Mutex::new(db)); super::build_router(db_state) }
+    }
+
+    #[tokio::test]
+    async fn test_search_with_min_tools() {
+        let app = test_app();
+        let resp = axum::http::Request::builder()
+            .uri("/api/v1/search?q=&min_tools=3")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = tower::ServiceExt::oneshot(app, resp).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        let servers = body["servers"].as_array().unwrap();
+        for s in servers {
+            let tools = s["tools"].as_array().unwrap();
+            assert!(tools.len() >= 3, "Server should have at least 3 tools, got {}", tools.len());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_with_has_prompts() {
+        let app = test_app();
+        let resp = axum::http::Request::builder()
+            .uri("/api/v1/search?q=&has_prompts=true")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = tower::ServiceExt::oneshot(app, resp).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        let servers = body["servers"].as_array().unwrap();
+        for s in servers {
+            let prompts = s["prompts"].as_array().unwrap();
+            assert!(!prompts.is_empty(), "Server should have at least one prompt");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_with_resource_filter() {
+        let app = test_app();
+        let resp = axum::http::Request::builder()
+            .uri("/api/v1/search?q=&resource=file")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = tower::ServiceExt::oneshot(app, resp).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        let servers = body["servers"].as_array().unwrap();
+        for s in servers {
+            let resources = s["resources"].as_array().unwrap();
+            let has_file = resources.iter().any(|r| r.as_str().unwrap().to_lowercase().contains("file"));
+            assert!(has_file, "Server should have a file resource");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_min_tools_zero_returns_all() {
+        let app = test_app();
+        // min_tools=0 should not filter anything
+        let resp = axum::http::Request::builder()
+            .uri("/api/v1/search?q=&min_tools=0")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = tower::ServiceExt::oneshot(app, resp).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        let total = body["total"].as_u64().unwrap();
+        assert!(total > 0, "Should return servers when min_tools=0");
+    }
+
+    #[tokio::test]
+    async fn test_search_min_tools_very_high_returns_none() {
+        let app = test_app();
+        let resp = axum::http::Request::builder()
+            .uri("/api/v1/search?q=&min_tools=999")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = tower::ServiceExt::oneshot(app, resp).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        let servers = body["servers"].as_array().unwrap();
+        assert!(servers.is_empty(), "No server should have 999 tools");
     }
 }
