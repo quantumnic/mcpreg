@@ -13,6 +13,7 @@ pub async fn run(
     limit: Option<usize>,
     compact: bool,
     offline: bool,
+    verbose: bool,
     min_downloads: Option<i64>,
     tool_filter: Option<&str>,
     transport_filter: Option<&str>,
@@ -143,26 +144,48 @@ pub async fn run(
     }
 
     if compact {
-        for server in &servers {
-            println!(
-                "{} v{} — {} (⬇ {})",
-                server.full_name(),
-                server.version,
-                server.description,
-                server.downloads,
-            );
+        for (i, server) in servers.iter().enumerate() {
+            if verbose {
+                println!(
+                    "#{:<3} {} v{} — {} (⬇ {})",
+                    i + 1,
+                    server.full_name(),
+                    server.version,
+                    server.description,
+                    server.downloads,
+                );
+            } else {
+                println!(
+                    "{} v{} — {} (⬇ {})",
+                    server.full_name(),
+                    server.version,
+                    server.description,
+                    server.downloads,
+                );
+            }
         }
     } else {
         println!("Found {} server(s) matching '{query}':\n", servers.len());
-        for server in &servers {
+        for (i, server) in servers.iter().enumerate() {
             let cat = crate::registry::seed::server_category(&server.owner, &server.name);
-            println!(
-                "  {} v{} — {}  [{}]",
-                server.full_name(),
-                server.version,
-                server.description,
-                cat,
-            );
+            if verbose {
+                println!(
+                    "  #{} {} v{} — {}  [{}]",
+                    i + 1,
+                    server.full_name(),
+                    server.version,
+                    server.description,
+                    cat,
+                );
+            } else {
+                println!(
+                    "  {} v{} — {}  [{}]",
+                    server.full_name(),
+                    server.version,
+                    server.description,
+                    cat,
+                );
+            }
             if !server.tools.is_empty() {
                 let tools_display: Vec<_> = server.tools.iter().take(5).cloned().collect();
                 let suffix = if server.tools.len() > 5 {
@@ -175,10 +198,18 @@ pub async fn run(
             if !server.prompts.is_empty() {
                 println!("    Prompts: {}", server.prompts.join(", "));
             }
-            println!(
-                "    ⬇ {} downloads | {} | {}",
-                server.downloads, server.license, server.transport
-            );
+            if verbose {
+                println!(
+                    "    ⬇ {} downloads | {} | {} | {} tools | {} tags",
+                    server.downloads, server.license, server.transport,
+                    server.tools.len(), server.tags.len(),
+                );
+            } else {
+                println!(
+                    "    ⬇ {} downloads | {} | {}",
+                    server.downloads, server.license, server.transport
+                );
+            }
             println!();
         }
     }

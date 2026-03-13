@@ -54,6 +54,9 @@ enum Commands {
         /// Search the local database instead of the remote registry
         #[arg(long)]
         offline: bool,
+        /// Show relevance scores in output
+        #[arg(short = 'v', long)]
+        verbose: bool,
         /// Only show servers with at least this many downloads
         #[arg(long)]
         min_downloads: Option<i64>,
@@ -261,6 +264,16 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Check compatibility between two MCP servers (tool conflicts, env overlaps)
+    Compat {
+        /// First server reference (owner/name)
+        server_a: String,
+        /// Second server reference (owner/name)
+        server_b: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// View or update mcpreg configuration
     Config {
         /// Action: show, get, set, path
@@ -406,13 +419,14 @@ async fn main() {
             limit,
             compact,
             offline,
+            verbose,
             min_downloads,
             tool,
             transport,
             author,
             owner,
             tag,
-        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, min_downloads, tool.as_deref(), transport.as_deref(), author.as_deref(), owner.as_deref(), tag.as_deref()).await,
+        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, verbose, min_downloads, tool.as_deref(), transport.as_deref(), author.as_deref(), owner.as_deref(), tag.as_deref()).await,
         Commands::Install { server } => commands::install::run(&server).await,
         Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
@@ -449,6 +463,9 @@ async fn main() {
         Commands::Compare { server_a, server_b, json } => {
             commands::compare::run(&server_a, &server_b, json)
         }
+        Commands::Compat { server_a, server_b, json } => {
+            commands::compat::run(&server_a, &server_b, json)
+        }
         Commands::Config { action, key, value } => {
             commands::config_cmd::run(&action, key.as_deref(), value.as_deref())
         }
@@ -462,10 +479,7 @@ async fn main() {
         Commands::Recommend { limit, json } => commands::recommend::run(limit, json),
         Commands::Backup { output } => commands::backup::run_backup(output.as_deref()),
         Commands::Restore { file, dry_run } => commands::backup::run_restore(&file, dry_run),
-        Commands::Health { json } => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(commands::health::run(json))
-        }
+        Commands::Health { json } => commands::health::run(json).await,
         Commands::History { limit, json } => commands::history::run(limit, json),
         Commands::Trending { limit, category, transport, json } => {
             commands::trending::run(limit, category.as_deref(), transport.as_deref(), json)

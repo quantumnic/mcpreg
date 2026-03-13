@@ -3,6 +3,7 @@ pub mod backup;
 pub mod browse;
 pub mod changelog;
 pub mod compare;
+pub mod compat;
 pub mod diff;
 pub mod completions;
 pub mod config_cmd;
