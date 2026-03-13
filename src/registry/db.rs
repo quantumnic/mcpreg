@@ -1768,3 +1768,168 @@ mod tag_tests {
         assert!(tags.iter().any(|(t, _)| t == "official"), "Should have 'official' tag");
     }
 }
+
+impl Database {
+    /// Delete multiple servers at once. Returns the number of actually deleted servers.
+    pub fn bulk_delete(&self, refs: &[(String, String)]) -> Result<usize> {
+        let mut deleted = 0usize;
+        for (owner, name) in refs {
+            if self.delete_server(owner, name)? {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
+    /// Efficient total server count without fetching rows.
+    pub fn count_servers(&self) -> Result<usize> {
+        let count: usize = self.conn.query_row("SELECT COUNT(*) FROM servers", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    /// Return a random server, optionally filtered by category.
+    pub fn random_server(&self, category: Option<&str>) -> Result<Option<ServerEntry>> {
+        let (sql, params_vec): (String, Vec<String>) = if let Some(cat) = category {
+            let escaped = escape_like(cat);
+            let pattern = format!("%{escaped}%");
+            (
+                "SELECT id, owner, name, version, description, author, license, repository,
+                        command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
+                 FROM servers WHERE LOWER(category) LIKE LOWER(?1) ESCAPE '\\' ORDER BY RANDOM() LIMIT 1".into(),
+                vec![pattern],
+            )
+        } else {
+            (
+                "SELECT id, owner, name, version, description, author, license, repository,
+                        command, args, transport, tools, resources, prompts, tags, category, downloads, created_at, updated_at
+                 FROM servers ORDER BY RANDOM() LIMIT 1".into(),
+                vec![],
+            )
+        };
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        let mut rows = stmt.query_map(params_refs.as_slice(), row_mapper)?;
+
+        match rows.next() {
+            Some(Ok(r)) => Ok(Some(r.into_entry())),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod bulk_and_count_tests {
+    use super::*;
+
+    fn test_entry(owner: &str, name: &str) -> ServerEntry {
+        ServerEntry {
+            id: None,
+            owner: owner.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: "Test".into(),
+            author: owner.into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_count_servers_empty() {
+        let db = Database::open_in_memory().unwrap();
+        assert_eq!(db.count_servers().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_count_servers_with_data() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry("a", "s1")).unwrap();
+        db.upsert_server(&test_entry("b", "s2")).unwrap();
+        db.upsert_server(&test_entry("c", "s3")).unwrap();
+        assert_eq!(db.count_servers().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_bulk_delete_all_found() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry("a", "s1")).unwrap();
+        db.upsert_server(&test_entry("b", "s2")).unwrap();
+        db.upsert_server(&test_entry("c", "s3")).unwrap();
+
+        let refs = vec![
+            ("a".into(), "s1".into()),
+            ("b".into(), "s2".into()),
+        ];
+        let deleted = db.bulk_delete(&refs).unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(db.count_servers().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_bulk_delete_partial() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry("a", "s1")).unwrap();
+
+        let refs = vec![
+            ("a".into(), "s1".into()),
+            ("nobody".into(), "nothing".into()),
+        ];
+        let deleted = db.bulk_delete(&refs).unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(db.count_servers().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_bulk_delete_empty() {
+        let db = Database::open_in_memory().unwrap();
+        let deleted = db.bulk_delete(&[]).unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn test_random_server_nonempty() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let server = db.random_server(None).unwrap();
+        assert!(server.is_some());
+    }
+
+    #[test]
+    fn test_random_server_empty_db() {
+        let db = Database::open_in_memory().unwrap();
+        let server = db.random_server(None).unwrap();
+        assert!(server.is_none());
+    }
+
+    #[test]
+    fn test_random_server_with_category() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let server = db.random_server(Some("database")).unwrap();
+        assert!(server.is_some());
+        let s = server.unwrap();
+        let cat = crate::registry::seed::server_category(&s.owner, &s.name).to_lowercase();
+        assert!(cat.contains("database"), "Expected database category, got {cat}");
+    }
+
+    #[test]
+    fn test_random_server_nonexistent_category() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let server = db.random_server(Some("zzzznonexistent")).unwrap();
+        assert!(server.is_none());
+    }
+}

@@ -229,8 +229,8 @@ pub async fn health(
 ) -> Json<serde_json::Value> {
     let db = db.lock().await;
     let server_count = db
-        .stats()
-        .map(|s| s.total_servers as i64)
+        .count_servers()
+        .map(|c| c as i64)
         .unwrap_or(-1);
     Json(serde_json::json!({
         "status": "ok",
@@ -1030,6 +1030,21 @@ pub async fn openapi() -> Json<serde_json::Value> {
                     ]
                 }
             },
+            "/api/v1/random": {
+                "get": {
+                    "summary": "Discover a random MCP server",
+                    "tags": ["Discovery"],
+                    "parameters": [
+                        {"name": "category", "in": "query", "description": "Optional category filter"},
+                    ]
+                }
+            },
+            "/api/v1/servers/{owner}/{name}/config": {
+                "get": { "summary": "Get claude_desktop_config.json snippet for a server", "tags": ["Servers"] }
+            },
+            "/api/v1/servers/batch/delete": {
+                "delete": { "summary": "Bulk delete servers by owner/name pairs", "tags": ["Servers"] }
+            },
         }
     }))
 }
@@ -1098,5 +1113,127 @@ pub async fn dependents(
         "server": format!("{owner}/{name}"),
         "dependents": dependents,
         "total": total,
+    })))
+}
+
+/// GET /api/v1/random — discover a random MCP server
+pub async fn random_server(
+    State(db): State<DbState>,
+    Query(params): Query<RandomQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let server = db.random_server(params.category.as_deref())?;
+
+    match server {
+        Some(s) => Ok(Json(serde_json::json!({
+            "server": {
+                "owner": s.owner,
+                "name": s.name,
+                "full_name": s.full_name(),
+                "version": s.version,
+                "description": s.description,
+                "author": s.author,
+                "license": s.license,
+                "repository": s.repository,
+                "command": s.command,
+                "args": s.args,
+                "transport": s.transport,
+                "tools": s.tools,
+                "resources": s.resources,
+                "prompts": s.prompts,
+                "tags": s.tags,
+                "downloads": s.downloads,
+                "category": crate::registry::seed::server_category(&s.owner, &s.name),
+            }
+        }))),
+        None => {
+            let msg = if params.category.is_some() {
+                "No servers found in this category"
+            } else {
+                "No servers in registry"
+            };
+            Err(McpRegError::NotFound(msg.into()))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RandomQuery {
+    pub category: Option<String>,
+}
+
+/// GET /api/v1/servers/:owner/:name/config — return claude_desktop_config.json snippet
+pub async fn server_config_snippet(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let entry = db
+        .get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+    let key = format!("{}-{}", owner, entry.name);
+
+    // Build the mcpServers config snippet
+    let mut server_config = serde_json::json!({
+        "command": entry.command,
+        "args": entry.args,
+    });
+
+    // Only add transport if not the default (stdio)
+    if entry.transport != "stdio" {
+        server_config["transport"] = serde_json::json!(entry.transport);
+    }
+
+    let snippet = serde_json::json!({
+        "mcpServers": {
+            key.clone(): server_config
+        }
+    });
+
+    Ok(Json(serde_json::json!({
+        "server": entry.full_name(),
+        "version": entry.version,
+        "config_key": key,
+        "claude_desktop_config": snippet,
+        "instructions": format!(
+            "Add this to your claude_desktop_config.json under \"mcpServers\":\n\n\"{}\":\n  command: {}\n  args: {:?}",
+            key, entry.command, entry.args
+        ),
+    })))
+}
+
+/// DELETE /api/v1/servers/batch — bulk delete servers
+pub async fn batch_delete_servers(
+    State(db): State<DbState>,
+    Json(body): Json<BatchRequest>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    if body.servers.is_empty() {
+        return Ok(Json(serde_json::json!({"deleted": 0, "not_found": [], "total_requested": 0})));
+    }
+    if body.servers.len() > 50 {
+        return Err(McpRegError::Validation("Maximum 50 servers per batch request".into()));
+    }
+
+    let mut refs = Vec::new();
+    let mut invalid = Vec::new();
+    for ref_str in &body.servers {
+        let parts: Vec<&str> = ref_str.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            refs.push((parts[0].to_string(), parts[1].to_string()));
+        } else {
+            invalid.push(ref_str.clone());
+        }
+    }
+
+    let db = db.lock().await;
+    let deleted = db.bulk_delete(&refs)?;
+    let not_found_count = refs.len() - deleted;
+
+    Ok(Json(serde_json::json!({
+        "deleted": deleted,
+        "total_requested": body.servers.len(),
+        "invalid_refs": invalid,
+        "not_found_count": not_found_count,
     })))
 }

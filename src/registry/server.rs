@@ -74,6 +74,15 @@ pub fn build_router(db_state: DbState) -> Router {
             "/api/v1/servers/:owner/:name/dependents",
             axum::routing::get(routes::dependents),
         )
+        .route(
+            "/api/v1/servers/:owner/:name/config",
+            axum::routing::get(routes::server_config_snippet),
+        )
+        .route("/api/v1/random", axum::routing::get(routes::random_server))
+        .route(
+            "/api/v1/servers/batch/delete",
+            axum::routing::delete(routes::batch_delete_servers),
+        )
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -2158,5 +2167,248 @@ mod fuzzy_prefix_integration_tests {
         let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(search.total, 0);
         // Suggestions may or may not appear depending on distance, but endpoint should work
+    }
+}
+
+#[cfg(test)]
+mod random_and_config_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_random_server() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/random")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["server"]["full_name"].is_string());
+        assert!(result["server"]["command"].is_string());
+        assert!(result["server"]["tools"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_api_random_with_category() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/random?category=database")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let cat = result["server"]["category"].as_str().unwrap().to_lowercase();
+        assert!(cat.contains("database"), "Expected database category, got {cat}");
+    }
+
+    #[tokio::test]
+    async fn test_api_random_empty_db() {
+        let db = Database::open_in_memory().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        let app = build_router(db_state);
+
+        let req = Request::builder()
+            .uri("/api/v1/random")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_api_random_nonexistent_category() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/random?category=zzzznonexistent")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_api_config_snippet() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/config")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["server"], "modelcontextprotocol/filesystem");
+        assert!(result["config_key"].is_string());
+        assert!(result["claude_desktop_config"]["mcpServers"].is_object());
+        assert!(result["instructions"].is_string());
+
+        // The config should have command and args
+        let config_key = result["config_key"].as_str().unwrap();
+        let server_config = &result["claude_desktop_config"]["mcpServers"][config_key];
+        assert!(server_config["command"].is_string());
+        assert!(server_config["args"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_api_config_snippet_not_found() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/nobody/nothing/config")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_api_config_snippet_sse_transport() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&crate::api::types::ServerEntry {
+            id: None,
+            owner: "test".into(),
+            name: "sse-server".into(),
+            version: "1.0.0".into(),
+            description: "SSE transport server".into(),
+            author: "test".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec!["index.js".into()],
+            transport: "sse".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        }).unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        let app = build_router(db_state);
+
+        let req = Request::builder()
+            .uri("/api/v1/servers/test/sse-server/config")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let key = result["config_key"].as_str().unwrap();
+        let server_config = &result["claude_desktop_config"]["mcpServers"][key];
+        // SSE transport should be included in config
+        assert_eq!(server_config["transport"], "sse");
+    }
+
+    #[tokio::test]
+    async fn test_api_batch_delete() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let initial_count = db.count_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        let app = build_router(db_state);
+
+        let body_json = serde_json::json!({
+            "servers": [
+                "modelcontextprotocol/filesystem",
+                "modelcontextprotocol/git",
+                "nobody/nothing"
+            ]
+        });
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/v1/servers/batch/delete")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body_json).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["deleted"].as_u64().unwrap(), 2);
+        assert_eq!(result["total_requested"].as_u64().unwrap(), 3);
+        assert_eq!(result["not_found_count"].as_u64().unwrap(), 1);
+
+        // Verify count decreased
+        let req = Request::builder()
+            .uri("/api/v1/stats")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let stats: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(stats["total_servers"].as_u64().unwrap() as usize, initial_count - 2);
+    }
+
+    #[tokio::test]
+    async fn test_api_batch_delete_empty() {
+        let app = seeded_app().await;
+        let body_json = serde_json::json!({"servers": []});
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/v1/servers/batch/delete")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body_json).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["deleted"].as_u64().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_api_batch_delete_invalid_refs() {
+        let app = seeded_app().await;
+        let body_json = serde_json::json!({
+            "servers": ["no-slash", "also-bad"]
+        });
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/v1/servers/batch/delete")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body_json).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["deleted"].as_u64().unwrap(), 0);
+        assert_eq!(result["invalid_refs"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_openapi_includes_new_endpoints() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/openapi")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let paths = result["paths"].as_object().unwrap();
+        assert!(paths.contains_key("/api/v1/random"), "OpenAPI should document /random");
+        assert!(paths.contains_key("/api/v1/servers/{owner}/{name}/config"), "OpenAPI should document /config");
+        assert!(paths.contains_key("/api/v1/servers/batch/delete"), "OpenAPI should document batch delete");
     }
 }
