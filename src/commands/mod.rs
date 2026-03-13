@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod backup;
 pub mod browse;
+pub mod check;
 pub mod changelog;
 pub mod compare;
 pub mod compat;
@@ -28,6 +29,7 @@ pub mod recommend;
 pub mod search;
 pub mod similar;
 pub mod stats;
+pub mod suggest;
 pub mod summary;
 pub mod tags;
 pub mod tools;

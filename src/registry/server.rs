@@ -68,6 +68,7 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/tags", axum::routing::get(routes::tags_index))
         .route("/api/v1/trending", axum::routing::get(routes::trending))
         .route("/api/v1/graph", axum::routing::get(routes::tool_graph))
+        .route("/api/v1/suggest", axum::routing::get(routes::suggest))
         .route("/api/v1/openapi", axum::routing::get(routes::openapi))
         .route(
             "/api/v1/servers/:owner/:name/dependents",
@@ -1998,6 +1999,115 @@ mod dependents_tests {
             let c1 = deps[1]["shared_count"].as_u64().unwrap();
             assert!(c0 >= c1, "Should be sorted by shared_count desc");
         }
+    }
+}
+
+#[cfg(test)]
+mod suggest_endpoint_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_suggest_endpoint_basic() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/suggest?q=file")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().unwrap() > 0);
+        let suggestions = result["suggestions"].as_array().unwrap();
+        assert!(suggestions.iter().any(|s| s.as_str().unwrap().contains("filesystem")));
+    }
+
+    #[tokio::test]
+    async fn test_suggest_endpoint_empty_query() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/suggest?q=")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["total"].as_u64().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_suggest_endpoint_with_limit() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/suggest?q=s&limit=3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["suggestions"].as_array().unwrap().len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_suggest_endpoint_no_match() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/suggest?q=zzzznonexistent")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["total"].as_u64().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_suggest_full_name_prefix() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/suggest?q=modelcontextprotocol%2Ffile")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().unwrap() >= 1);
+        let suggestions = result["suggestions"].as_array().unwrap();
+        for s in suggestions {
+            assert!(s.as_str().unwrap().starts_with("modelcontextprotocol/file"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_suggest_documented_in_openapi() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/openapi")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["paths"]["/api/v1/suggest"].is_object(), "Suggest should be in OpenAPI docs");
     }
 }
 

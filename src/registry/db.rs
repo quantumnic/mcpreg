@@ -753,6 +753,31 @@ mod tests {
 }
 
 impl Database {
+    /// Prefix-based autocomplete: return server full_names matching a prefix.
+    /// Searches both `name` and `owner/name` with prefix matching, limited results.
+    pub fn suggest(&self, prefix: &str, limit: usize) -> Result<Vec<String>> {
+        if prefix.is_empty() {
+            return Ok(Vec::new());
+        }
+        let escaped = escape_like(prefix);
+        let pattern = format!("{escaped}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT owner || '/' || name FROM servers
+             WHERE (owner || '/' || name) LIKE ?1 ESCAPE '\\' OR name LIKE ?1 ESCAPE '\\'
+             ORDER BY downloads DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![pattern, limit as i64],
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
     /// Search servers that have a specific tag (case-insensitive substring match).
     #[allow(dead_code)]
     pub fn search_by_tags(&self, tag: &str) -> Result<Vec<ServerEntry>> {
@@ -1467,6 +1492,94 @@ mod tags_tests {
         let results = db.search("helper production").unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].owner, "alice");
+    }
+}
+
+#[cfg(test)]
+mod suggest_tests {
+    use super::*;
+
+    fn make_entry(owner: &str, name: &str, downloads: i64) -> ServerEntry {
+        ServerEntry {
+            id: None,
+            owner: owner.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: format!("Server {name}"),
+            author: owner.into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            downloads,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_suggest_by_name_prefix() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("org", "filesystem", 100)).unwrap();
+        db.upsert_server(&make_entry("org", "file-upload", 50)).unwrap();
+        db.upsert_server(&make_entry("org", "sqlite", 200)).unwrap();
+
+        let results = db.suggest("file", 10).unwrap();
+        assert_eq!(results.len(), 2);
+        // Should be sorted by downloads: filesystem (100) before file-upload (50)
+        assert_eq!(results[0], "org/filesystem");
+        assert_eq!(results[1], "org/file-upload");
+    }
+
+    #[test]
+    fn test_suggest_by_full_name_prefix() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("modelcontextprotocol", "filesystem", 100)).unwrap();
+        db.upsert_server(&make_entry("other", "filesystem", 50)).unwrap();
+
+        let results = db.suggest("modelcontextprotocol/file", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], "modelcontextprotocol/filesystem");
+    }
+
+    #[test]
+    fn test_suggest_empty_prefix() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("org", "tool", 10)).unwrap();
+        let results = db.suggest("", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_respects_limit() {
+        let db = Database::open_in_memory().unwrap();
+        for i in 0..10 {
+            db.upsert_server(&make_entry("org", &format!("server-{i}"), i * 10)).unwrap();
+        }
+        let results = db.suggest("server", 3).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_suggest_no_match() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("org", "tool", 10)).unwrap();
+        let results = db.suggest("zzz", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_special_chars_escaped() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("org", "tool", 10)).unwrap();
+        // '%' should not match everything
+        let results = db.suggest("%", 10).unwrap();
+        assert!(results.is_empty());
     }
 }
 

@@ -399,6 +399,23 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Verify installed servers are runnable (command on PATH, config consistency)
+    Check {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Autocomplete: suggest server names matching a prefix
+    Suggest {
+        /// Prefix to match
+        prefix: String,
+        /// Maximum number of suggestions (default: 10)
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -499,6 +516,8 @@ async fn main() {
         Commands::Summary { json } => commands::summary::run(json),
         Commands::Audit { json } => commands::audit::run(json),
         Commands::Graph { min_shared, limit, json } => commands::graph::run(min_shared, limit, json),
+        Commands::Check { json } => commands::check::run(json),
+        Commands::Suggest { prefix, limit, json } => commands::suggest::run(&prefix, limit, json).await,
         Commands::Completions { shell } => commands::completions::run(shell),
         Commands::Serve { bind, db } => {
             let db_path = match db {

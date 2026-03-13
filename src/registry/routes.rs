@@ -403,6 +403,27 @@ pub async fn tags_index(
     })))
 }
 
+/// GET /api/v1/suggest — autocomplete server names by prefix
+pub async fn suggest(
+    State(db): State<DbState>,
+    Query(params): Query<SuggestQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let prefix = params.q.unwrap_or_default();
+    let limit = params.limit.unwrap_or(10).min(50);
+    let db = db.lock().await;
+    let suggestions = db.suggest(&prefix, limit)?;
+    Ok(Json(serde_json::json!({
+        "suggestions": suggestions,
+        "total": suggestions.len(),
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct SuggestQuery {
+    pub q: Option<String>,
+    pub limit: Option<usize>,
+}
+
 /// POST /api/v1/servers/batch — fetch multiple servers by owner/name pairs
 pub async fn batch_get_servers(
     State(db): State<DbState>,
@@ -998,6 +1019,16 @@ pub async fn openapi() -> Json<serde_json::Value> {
             },
             "/api/v1/graph": {
                 "get": { "summary": "Tool-sharing graph between servers", "tags": ["Discovery"] }
+            },
+            "/api/v1/suggest": {
+                "get": {
+                    "summary": "Autocomplete server names by prefix",
+                    "tags": ["Discovery"],
+                    "parameters": [
+                        {"name": "q", "in": "query", "description": "Prefix to match"},
+                        {"name": "limit", "in": "query", "description": "Max suggestions (default 10, max 50)"},
+                    ]
+                }
             },
         }
     }))
