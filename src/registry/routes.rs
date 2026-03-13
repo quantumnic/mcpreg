@@ -25,6 +25,8 @@ pub struct SearchQuery {
     pub min_tools: Option<usize>,
     pub has_prompts: Option<bool>,
     pub resource: Option<String>,
+    /// Exclude deprecated servers from results (default: false)
+    pub exclude_deprecated: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -105,6 +107,11 @@ pub async fn search(
         servers.retain(|s| {
             s.resources.iter().any(|r| r.to_lowercase().contains(&r_lower))
         });
+    }
+
+    // Exclude deprecated servers when requested
+    if params.exclude_deprecated.unwrap_or(false) {
+        servers.retain(|s| !s.deprecated);
     }
 
     // Server-side sorting
@@ -997,6 +1004,14 @@ pub async fn patch_server(
         entry.homepage = homepage.to_string();
         changed.push("homepage");
     }
+    if let Some(deprecated) = patch.get("deprecated").and_then(|v| v.as_bool()) {
+        entry.deprecated = deprecated;
+        changed.push("deprecated");
+    }
+    if let Some(deprecated_by) = patch.get("deprecated_by").and_then(|v| v.as_str()) {
+        entry.deprecated_by = if deprecated_by.is_empty() { None } else { Some(deprecated_by.to_string()) };
+        changed.push("deprecated_by");
+    }
 
     if changed.is_empty() {
         return Err(McpRegError::Validation("no valid fields to update".into()));
@@ -1484,4 +1499,142 @@ pub async fn recently_updated(
 #[derive(Deserialize)]
 pub struct RecentlyUpdatedQuery {
     pub limit: Option<usize>,
+}
+
+/// Bulk import servers (POST /api/v1/import)
+pub async fn bulk_import(
+    State(db): State<DbState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let servers = payload
+        .get("servers")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| McpRegError::Validation("body must contain a 'servers' array".into()))?;
+
+    if servers.len() > 500 {
+        return Err(McpRegError::Validation("maximum 500 servers per import".into()));
+    }
+
+    let mut imported = 0usize;
+    let mut errors = Vec::<serde_json::Value>::new();
+    let db = db.lock().await;
+
+    for (i, raw) in servers.iter().enumerate() {
+        match serde_json::from_value::<ServerEntry>(raw.clone()) {
+            Ok(entry) => {
+                if entry.owner.is_empty() || entry.name.is_empty() {
+                    errors.push(serde_json::json!({
+                        "index": i,
+                        "error": "owner and name are required"
+                    }));
+                    continue;
+                }
+                match db.upsert_server(&entry) {
+                    Ok(_) => imported += 1,
+                    Err(e) => errors.push(serde_json::json!({
+                        "index": i,
+                        "server": entry.full_name(),
+                        "error": e.to_string()
+                    })),
+                }
+            }
+            Err(e) => {
+                errors.push(serde_json::json!({
+                    "index": i,
+                    "error": format!("invalid server entry: {e}")
+                }));
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "imported": imported,
+        "errors": errors,
+        "total_submitted": servers.len(),
+    })))
+}
+
+/// Compare two servers side-by-side (GET /api/v1/compare/:owner_a/:name_a/:owner_b/:name_b)
+pub async fn compare_servers(
+    State(db): State<DbState>,
+    Path((owner_a, name_a, owner_b, name_b)): Path<(String, String, String, String)>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let a = db.get_server(&owner_a, &name_a)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner_a}/{name_a}")))?;
+    let b = db.get_server(&owner_b, &name_b)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner_b}/{name_b}")))?;
+
+    let tools_a: std::collections::HashSet<&str> = a.tools.iter().map(|s| s.as_str()).collect();
+    let tools_b: std::collections::HashSet<&str> = b.tools.iter().map(|s| s.as_str()).collect();
+    let shared_tools: Vec<&str> = tools_a.intersection(&tools_b).copied().collect();
+    let only_a_tools: Vec<&str> = tools_a.difference(&tools_b).copied().collect();
+    let only_b_tools: Vec<&str> = tools_b.difference(&tools_a).copied().collect();
+
+    let res_a: std::collections::HashSet<&str> = a.resources.iter().map(|s| s.as_str()).collect();
+    let res_b: std::collections::HashSet<&str> = b.resources.iter().map(|s| s.as_str()).collect();
+    let shared_resources: Vec<&str> = res_a.intersection(&res_b).copied().collect();
+
+    let prompts_a: std::collections::HashSet<&str> = a.prompts.iter().map(|s| s.as_str()).collect();
+    let prompts_b: std::collections::HashSet<&str> = b.prompts.iter().map(|s| s.as_str()).collect();
+    let shared_prompts: Vec<&str> = prompts_a.intersection(&prompts_b).copied().collect();
+
+    Ok(Json(serde_json::json!({
+        "server_a": {
+            "full_name": a.full_name(),
+            "version": a.version,
+            "description": a.description,
+            "transport": a.transport,
+            "tools": a.tools,
+            "resources": a.resources,
+            "prompts": a.prompts,
+            "downloads": a.downloads,
+            "deprecated": a.deprecated,
+        },
+        "server_b": {
+            "full_name": b.full_name(),
+            "version": b.version,
+            "description": b.description,
+            "transport": b.transport,
+            "tools": b.tools,
+            "resources": b.resources,
+            "prompts": b.prompts,
+            "downloads": b.downloads,
+            "deprecated": b.deprecated,
+        },
+        "comparison": {
+            "shared_tools": shared_tools,
+            "only_a_tools": only_a_tools,
+            "only_b_tools": only_b_tools,
+            "shared_resources": shared_resources,
+            "shared_prompts": shared_prompts,
+            "same_transport": a.transport == b.transport,
+        }
+    })))
+}
+
+/// List all deprecated servers (GET /api/v1/deprecated)
+pub async fn list_deprecated(
+    State(db): State<DbState>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let all = db.list_all()?;
+    let deprecated: Vec<serde_json::Value> = all
+        .into_iter()
+        .filter(|s| s.deprecated)
+        .map(|s| {
+            serde_json::json!({
+                "full_name": s.full_name(),
+                "version": s.version,
+                "description": s.description,
+                "deprecated_by": s.deprecated_by,
+                "downloads": s.downloads,
+            })
+        })
+        .collect();
+    let total = deprecated.len();
+    Ok(Json(serde_json::json!({
+        "servers": deprecated,
+        "total": total,
+    })))
 }

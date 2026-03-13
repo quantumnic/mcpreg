@@ -63,6 +63,13 @@ pub async fn run(server_ref: &str, json_output: bool) -> Result<()> {
         println!("Updated: {updated}");
     }
 
+    if entry.deprecated {
+        println!("\n⚠️  DEPRECATED");
+        if let Some(ref replacement) = entry.deprecated_by {
+            println!("   Replaced by: {replacement}");
+        }
+    }
+
     // Installation hint
     println!("\nInstall: mcpreg install {}/{}", entry.owner, entry.name);
 

@@ -88,6 +88,10 @@ pub struct ServerEntry {
     #[serde(default)]
     pub homepage: String,
     #[serde(default)]
+    pub deprecated: bool,
+    #[serde(default)]
+    pub deprecated_by: Option<String>,
+    #[serde(default)]
     pub downloads: i64,
     #[serde(default)]
     pub created_at: Option<String>,
@@ -119,6 +123,8 @@ impl ServerEntry {
             tags: manifest.capabilities.tags.clone(),
             env: manifest.server.env.clone(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -266,6 +272,8 @@ tools = ["tool1"]
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 42,
             created_at: None,
             updated_at: None,
@@ -374,6 +382,8 @@ prompts = ["analyze", "summarize"]
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 42,
             created_at: Some("2024-01-01".into()),
             updated_at: Some("2024-01-02".into()),
@@ -431,6 +441,8 @@ mod additional_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -513,6 +525,8 @@ mod additional_tests {
                 tags: vec![],
                 env: Default::default(),
                 homepage: String::new(),
+                deprecated: false,
+                deprecated_by: None,
                 downloads: 42,
                 created_at: None,
                 updated_at: None,

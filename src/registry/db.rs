@@ -43,6 +43,8 @@ impl Database {
                 tags TEXT NOT NULL DEFAULT '[]',
                 env TEXT NOT NULL DEFAULT '{}',
                 homepage TEXT NOT NULL DEFAULT '',
+                deprecated INTEGER NOT NULL DEFAULT 0,
+                deprecated_by TEXT NOT NULL DEFAULT '',
                 category TEXT NOT NULL DEFAULT '',
                 downloads INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -135,6 +137,18 @@ impl Database {
             self.conn.execute_batch("ALTER TABLE servers ADD COLUMN homepage TEXT NOT NULL DEFAULT ''")?;
         }
 
+        // Add deprecated columns if missing
+        let has_deprecated: bool = self.conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name='deprecated'")?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !has_deprecated {
+            self.conn.execute_batch("ALTER TABLE servers ADD COLUMN deprecated INTEGER NOT NULL DEFAULT 0")?;
+            self.conn.execute_batch("ALTER TABLE servers ADD COLUMN deprecated_by TEXT NOT NULL DEFAULT ''")?;
+        }
+
         // Create server_versions table if missing (for databases created before this version)
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS server_versions (
@@ -161,8 +175,8 @@ impl Database {
         let category = crate::registry::seed::server_category(&entry.owner, &entry.name);
 
         self.conn.execute(
-            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+            "INSERT INTO servers (owner, name, version, description, author, license, repository, command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
              ON CONFLICT(owner, name) DO UPDATE SET
                 version = excluded.version,
                 description = excluded.description,
@@ -178,6 +192,8 @@ impl Database {
                 tags = excluded.tags,
                 env = excluded.env,
                 homepage = excluded.homepage,
+                deprecated = excluded.deprecated,
+                deprecated_by = excluded.deprecated_by,
                 category = excluded.category,
                 updated_at = datetime('now')",
             params![
@@ -197,6 +213,8 @@ impl Database {
                 tags_json,
                 env_json,
                 entry.homepage,
+                entry.deprecated as i32,
+                entry.deprecated_by.as_deref().unwrap_or(""),
                 category,
                 entry.downloads,
             ],
@@ -281,7 +299,7 @@ impl Database {
 
         let sql = format!(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at,
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at,
                     ({score_expr} + downloads / 100) AS relevance
              FROM servers
              WHERE {where_clause}
@@ -311,7 +329,7 @@ impl Database {
         let pattern = format!("%{escaped}%");
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
              FROM servers WHERE category LIKE ?1 ORDER BY downloads DESC",
         )?;
         let rows = stmt.query_map(params![pattern], row_mapper)?;
@@ -325,7 +343,7 @@ impl Database {
     pub fn get_server(&self, owner: &str, name: &str) -> Result<Option<ServerEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
              FROM servers WHERE owner = ?1 AND name = ?2",
         )?;
         let mut rows = stmt.query_map(params![owner, name], row_mapper)?;
@@ -352,7 +370,7 @@ impl Database {
 
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
              FROM servers ORDER BY downloads DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(params![per_page as i64, offset as i64], row_mapper)?;
@@ -362,6 +380,21 @@ impl Database {
             entries.push(row?.into_entry());
         }
         Ok((entries, total))
+    }
+
+    /// Return all servers (no pagination).
+    pub fn list_all(&self) -> Result<Vec<ServerEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, owner, name, version, description, author, license, repository,
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
+             FROM servers ORDER BY downloads DESC",
+        )?;
+        let rows = stmt.query_map([], row_mapper)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?.into_entry());
+        }
+        Ok(entries)
     }
 
     /// Seed the database with well-known MCP servers if the DB is empty.
@@ -496,10 +529,12 @@ fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<ServerEntryRow> {
         tags: row.get::<_, String>(14)?,
         env: row.get::<_, String>(15)?,
         homepage: row.get(16)?,
-        category: row.get(17)?,
-        downloads: row.get(18)?,
-        created_at: row.get(19)?,
-        updated_at: row.get(20)?,
+        deprecated: row.get::<_, i32>(17)?,
+        deprecated_by: row.get(18)?,
+        category: row.get(19)?,
+        downloads: row.get(20)?,
+        created_at: row.get(21)?,
+        updated_at: row.get(22)?,
     })
 }
 
@@ -521,6 +556,8 @@ struct ServerEntryRow {
     tags: String,
     env: String,
     homepage: String,
+    deprecated: i32,
+    deprecated_by: String,
     #[allow(dead_code)]
     category: String,
     downloads: i64,
@@ -548,6 +585,8 @@ impl ServerEntryRow {
             tags: serde_json::from_str(&self.tags).unwrap_or_default(),
             env: serde_json::from_str(&self.env).unwrap_or_default(),
             homepage: self.homepage,
+            deprecated: self.deprecated != 0,
+            deprecated_by: if self.deprecated_by.is_empty() { None } else { Some(self.deprecated_by) },
             downloads: self.downloads,
             created_at: Some(self.created_at),
             updated_at: Some(self.updated_at),
@@ -578,6 +617,8 @@ mod tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -822,7 +863,7 @@ impl Database {
         let pattern = format!("%{escaped}%");
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
              FROM servers WHERE LOWER(tags) LIKE LOWER(?1) ESCAPE '\\' ORDER BY downloads DESC",
         )?;
         let rows = stmt.query_map(params![pattern], row_mapper)?;
@@ -1154,6 +1195,8 @@ mod search_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads,
             created_at: None,
             updated_at: None,
@@ -1361,6 +1404,8 @@ mod tools_index_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1426,6 +1471,8 @@ mod prompts_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1456,6 +1503,8 @@ mod prompts_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1486,6 +1535,8 @@ mod prompts_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1527,6 +1578,8 @@ mod tags_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1609,6 +1662,8 @@ mod suggest_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads,
             created_at: None,
             updated_at: None,
@@ -1699,6 +1754,8 @@ mod improved_search_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads,
             created_at: None,
             updated_at: None,
@@ -1785,6 +1842,8 @@ mod tag_tests {
             tags: tags.into_iter().map(String::from).collect(),
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1891,14 +1950,14 @@ impl Database {
             let pattern = format!("%{escaped}%");
             (
                 "SELECT id, owner, name, version, description, author, license, repository,
-                        command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+                        command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
                  FROM servers WHERE LOWER(category) LIKE LOWER(?1) ESCAPE '\\' ORDER BY RANDOM() LIMIT 1".into(),
                 vec![pattern],
             )
         } else {
             (
                 "SELECT id, owner, name, version, description, author, license, repository,
-                        command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+                        command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
                  FROM servers ORDER BY RANDOM() LIMIT 1".into(),
                 vec![],
             )
@@ -1940,6 +1999,8 @@ mod bulk_and_count_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -2053,7 +2114,7 @@ impl Database {
     pub fn recently_updated(&self, limit: usize) -> Result<Vec<ServerEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
              FROM servers ORDER BY updated_at DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], row_mapper)?;
@@ -2089,7 +2150,7 @@ impl Database {
     pub fn export_all(&self) -> Result<Vec<ServerEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
              FROM servers ORDER BY owner, name",
         )?;
         let rows = stmt.query_map([], row_mapper)?;
@@ -2123,7 +2184,7 @@ impl Database {
         let where_clause = conditions.join(" OR ");
         let sql = format!(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
              FROM servers
              WHERE {where_clause}
              ORDER BY downloads DESC
@@ -2250,6 +2311,8 @@ mod owners_export_tests {
             tags: vec![],
             env: std::collections::HashMap::new(),
             homepage: "https://example.com".into(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -2285,6 +2348,8 @@ mod owners_export_tests {
             tags: vec![],
             env: Default::default(),
             homepage: "https://my-mcp-server.dev".into(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -2326,6 +2391,8 @@ mod resources_db_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,

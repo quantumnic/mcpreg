@@ -89,6 +89,12 @@ pub fn build_router(db_state: DbState) -> Router {
             "/api/v1/servers/batch/delete",
             axum::routing::delete(routes::batch_delete_servers),
         )
+        .route("/api/v1/import", axum::routing::post(routes::bulk_import))
+        .route(
+            "/api/v1/compare/:owner_a/:name_a/:owner_b/:name_b",
+            axum::routing::get(routes::compare_servers),
+        )
+        .route("/api/v1/deprecated", axum::routing::get(routes::list_deprecated))
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -121,6 +127,8 @@ mod tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 1500,
             created_at: None,
             updated_at: None,
@@ -263,6 +271,8 @@ mod tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -298,6 +308,8 @@ mod tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -659,6 +671,8 @@ mod improvement_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -694,6 +708,8 @@ mod improvement_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -729,6 +745,8 @@ mod improvement_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -764,6 +782,8 @@ mod improvement_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -969,6 +989,8 @@ mod improvement_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1059,6 +1081,8 @@ mod diff_endpoint_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 100,
             created_at: None,
             updated_at: None,
@@ -1260,6 +1284,8 @@ mod validate_and_patch_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1309,6 +1335,8 @@ mod validate_and_patch_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1353,6 +1381,8 @@ mod validate_and_patch_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -1556,6 +1586,8 @@ mod search_suggestions_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -2330,6 +2362,8 @@ mod random_and_config_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -2546,6 +2580,8 @@ mod export_owners_searchany_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -2618,6 +2654,8 @@ mod export_owners_searchany_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -2697,6 +2735,8 @@ mod changelog_and_recent_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 0,
             created_at: None,
             updated_at: None,
@@ -2725,6 +2765,8 @@ mod changelog_and_recent_tests {
             tags: vec![],
             env: Default::default(),
             homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
             downloads: 10,
             created_at: None,
             updated_at: None,
@@ -2996,5 +3038,417 @@ mod search_filter_tests {
             serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
         let servers = body["servers"].as_array().unwrap();
         assert!(servers.is_empty(), "No server should have 999 tools");
+    }
+}
+
+#[cfg(test)]
+mod bulk_import_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn seed_entry(owner: &str, name: &str) -> ServerEntry {
+        ServerEntry {
+            id: None,
+            owner: owner.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: format!("{name} server"),
+            author: owner.into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    async fn setup() -> axum::Router {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let state: crate::registry::routes::DbState =
+            std::sync::Arc::new(tokio::sync::Mutex::new(db));
+        build_router(state)
+    }
+
+    #[tokio::test]
+    async fn test_bulk_import_success() {
+        let app = setup().await;
+        let body = serde_json::json!({
+            "servers": [
+                seed_entry("alice", "tool-a"),
+                seed_entry("bob", "tool-b"),
+            ]
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/import")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["imported"], 2);
+        assert_eq!(body["total_submitted"], 2);
+        assert!(body["errors"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_bulk_import_partial_errors() {
+        let app = setup().await;
+        let body = serde_json::json!({
+            "servers": [
+                seed_entry("alice", "ok-server"),
+                { "name": "missing-owner" },
+            ]
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/import")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["imported"], 1);
+        assert_eq!(body["errors"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_bulk_import_missing_servers_array() {
+        let app = setup().await;
+        let body = serde_json::json!({ "data": [] });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/import")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        // Should return an error
+        assert_ne!(response.status(), 200);
+    }
+}
+
+#[cfg(test)]
+mod compare_api_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn setup_with_servers() -> axum::Router {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let entry_a = ServerEntry {
+            id: None,
+            owner: "alice".into(),
+            name: "tool-a".into(),
+            version: "1.0.0".into(),
+            description: "Tool A".into(),
+            author: "alice".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["read_file".into(), "write_file".into()],
+            resources: vec!["file://".into()],
+            prompts: vec!["summarize".into()],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 100,
+            created_at: None,
+            updated_at: None,
+        };
+        let entry_b = ServerEntry {
+            id: None,
+            owner: "bob".into(),
+            name: "tool-b".into(),
+            version: "2.0.0".into(),
+            description: "Tool B".into(),
+            author: "bob".into(),
+            license: "Apache-2.0".into(),
+            repository: String::new(),
+            command: "python".into(),
+            args: vec![],
+            transport: "sse".into(),
+            tools: vec!["read_file".into(), "search".into()],
+            resources: vec!["file://".into(), "http://".into()],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 50,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry_a).unwrap();
+        db.upsert_server(&entry_b).unwrap();
+        let state: crate::registry::routes::DbState =
+            std::sync::Arc::new(tokio::sync::Mutex::new(db));
+        build_router(state)
+    }
+
+    #[tokio::test]
+    async fn test_compare_servers_api() {
+        let app = setup_with_servers().await;
+        let request = Request::builder()
+            .uri("/api/v1/compare/alice/tool-a/bob/tool-b")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["server_a"]["full_name"], "alice/tool-a");
+        assert_eq!(body["server_b"]["full_name"], "bob/tool-b");
+        let shared = body["comparison"]["shared_tools"].as_array().unwrap();
+        assert!(shared.iter().any(|t| t == "read_file"));
+        assert!(!body["comparison"]["same_transport"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_compare_servers_not_found() {
+        let app = setup_with_servers().await;
+        let request = Request::builder()
+            .uri("/api/v1/compare/alice/tool-a/nobody/nothing")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 404);
+    }
+}
+
+#[cfg(test)]
+mod deprecated_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn setup_with_deprecated() -> axum::Router {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let active = ServerEntry {
+            id: None,
+            owner: "alice".into(),
+            name: "new-tool".into(),
+            version: "2.0.0".into(),
+            description: "The new tool".into(),
+            author: "alice".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["do_stuff".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 100,
+            created_at: None,
+            updated_at: None,
+        };
+        let old = ServerEntry {
+            id: None,
+            owner: "alice".into(),
+            name: "old-tool".into(),
+            version: "1.0.0".into(),
+            description: "The old deprecated tool".into(),
+            author: "alice".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["do_stuff".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: true,
+            deprecated_by: Some("alice/new-tool".into()),
+            downloads: 50,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&active).unwrap();
+        db.upsert_server(&old).unwrap();
+        let state: crate::registry::routes::DbState =
+            std::sync::Arc::new(tokio::sync::Mutex::new(db));
+        build_router(state)
+    }
+
+    #[tokio::test]
+    async fn test_list_deprecated_endpoint() {
+        let app = setup_with_deprecated().await;
+        let request = Request::builder()
+            .uri("/api/v1/deprecated")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["total"], 1);
+        let servers = body["servers"].as_array().unwrap();
+        assert_eq!(servers[0]["full_name"], "alice/old-tool");
+        assert_eq!(servers[0]["deprecated_by"], "alice/new-tool");
+    }
+
+    #[tokio::test]
+    async fn test_search_exclude_deprecated() {
+        let app = setup_with_deprecated().await;
+        // Without exclude
+        let request = Request::builder()
+            .uri("/api/v1/search?q=tool")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["total"], 2);
+
+        // With exclude
+        let request = Request::builder()
+            .uri("/api/v1/search?q=tool&exclude_deprecated=true")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["servers"][0]["name"], "new-tool");
+    }
+
+    #[tokio::test]
+    async fn test_patch_deprecate_server() {
+        let app = setup_with_deprecated().await;
+        let patch = serde_json::json!({
+            "deprecated": true,
+            "deprecated_by": "alice/new-tool"
+        });
+        let request = Request::builder()
+            .method("PATCH")
+            .uri("/api/v1/servers/alice/new-tool")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&patch).unwrap()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert!(body["updated_fields"].as_array().unwrap().iter().any(|f| f == "deprecated"));
+
+        // Verify both are now deprecated
+        let request = Request::builder()
+            .uri("/api/v1/deprecated")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["total"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_deprecated_field_in_server_info() {
+        let app = setup_with_deprecated().await;
+        let request = Request::builder()
+            .uri("/api/v1/servers/alice/old-tool")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["deprecated"], true);
+        assert_eq!(body["deprecated_by"], "alice/new-tool");
+    }
+}
+
+#[cfg(test)]
+mod deprecation_db_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+
+    fn make_entry(owner: &str, name: &str, deprecated: bool, deprecated_by: Option<&str>) -> ServerEntry {
+        ServerEntry {
+            id: None,
+            owner: owner.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: "test".into(),
+            author: owner.into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated,
+            deprecated_by: deprecated_by.map(|s| s.to_string()),
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_deprecated_roundtrip_through_db() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("x", "old", true, Some("x/new"))).unwrap();
+        db.upsert_server(&make_entry("x", "new", false, None)).unwrap();
+
+        let old = db.get_server("x", "old").unwrap().unwrap();
+        assert!(old.deprecated);
+        assert_eq!(old.deprecated_by, Some("x/new".to_string()));
+
+        let new = db.get_server("x", "new").unwrap().unwrap();
+        assert!(!new.deprecated);
+        assert_eq!(new.deprecated_by, None);
+    }
+
+    #[test]
+    fn test_list_all_includes_deprecated() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        db.upsert_server(&make_entry("a", "active", false, None)).unwrap();
+        db.upsert_server(&make_entry("a", "old", true, Some("a/active"))).unwrap();
+        let all = db.list_all().unwrap();
+        assert_eq!(all.len(), 2);
+        let dep_count = all.iter().filter(|s| s.deprecated).count();
+        assert_eq!(dep_count, 1);
     }
 }

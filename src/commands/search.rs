@@ -203,6 +203,10 @@ pub async fn run(
             if !server.prompts.is_empty() {
                 println!("    Prompts: {}", server.prompts.join(", "));
             }
+            if server.deprecated {
+                let replacement = server.deprecated_by.as_deref().unwrap_or("unknown");
+                println!("    ⚠️  DEPRECATED — replaced by {replacement}");
+            }
             if verbose {
                 println!(
                     "    ⬇ {} downloads | {} | {} | {} tools | {} tags",
