@@ -901,3 +901,171 @@ pub async fn patch_server(
         "updated_fields": changed,
     })))
 }
+
+/// GET /api/v1/openapi — API documentation / endpoint listing
+pub async fn openapi() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {
+            "title": "mcpreg API",
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": "Open source registry and marketplace for MCP (Model Context Protocol) servers",
+        },
+        "paths": {
+            "/health": {
+                "get": { "summary": "Health check", "tags": ["System"] }
+            },
+            "/api/v1/version": {
+                "get": { "summary": "Server version info", "tags": ["System"] }
+            },
+            "/api/v1/openapi": {
+                "get": { "summary": "API documentation (this endpoint)", "tags": ["System"] }
+            },
+            "/api/v1/search": {
+                "get": {
+                    "summary": "Search for MCP servers",
+                    "tags": ["Servers"],
+                    "parameters": [
+                        {"name": "q", "in": "query", "description": "Search query (multi-word AND matching)"},
+                        {"name": "category", "in": "query", "description": "Filter by category"},
+                        {"name": "sort", "in": "query", "description": "Sort order: downloads, name, updated"},
+                        {"name": "limit", "in": "query", "description": "Max results"},
+                        {"name": "min_downloads", "in": "query", "description": "Minimum download count"},
+                        {"name": "tool", "in": "query", "description": "Filter by tool name"},
+                        {"name": "transport", "in": "query", "description": "Filter by transport type"},
+                        {"name": "author", "in": "query", "description": "Filter by author"},
+                        {"name": "owner", "in": "query", "description": "Filter by owner"},
+                        {"name": "tag", "in": "query", "description": "Filter by tag"},
+                    ]
+                }
+            },
+            "/api/v1/servers": {
+                "get": {
+                    "summary": "List servers (paginated)",
+                    "tags": ["Servers"],
+                    "parameters": [
+                        {"name": "page", "in": "query", "description": "Page number (default: 1)"},
+                        {"name": "per_page", "in": "query", "description": "Items per page (max 100)"},
+                    ]
+                }
+            },
+            "/api/v1/servers/{owner}/{name}": {
+                "get": { "summary": "Get server details (increments download count)", "tags": ["Servers"] },
+                "delete": { "summary": "Delete a server", "tags": ["Servers"] },
+                "patch": { "summary": "Partial update a server", "tags": ["Servers"] },
+            },
+            "/api/v1/servers/{owner}/{name}/download": {
+                "post": { "summary": "Track a download without fetching details", "tags": ["Servers"] }
+            },
+            "/api/v1/servers/{owner}/{name}/versions": {
+                "get": { "summary": "Version history for a server", "tags": ["Servers"] }
+            },
+            "/api/v1/servers/{owner}/{name}/similar": {
+                "get": { "summary": "Find similar servers", "tags": ["Discovery"] }
+            },
+            "/api/v1/servers/{owner}/{name}/diff": {
+                "get": { "summary": "Diff current state vs previous version", "tags": ["Servers"] }
+            },
+            "/api/v1/servers/{owner}/{name}/dependents": {
+                "get": { "summary": "Find servers that share tools with this one", "tags": ["Discovery"] }
+            },
+            "/api/v1/servers/batch": {
+                "post": { "summary": "Fetch multiple servers by owner/name pairs", "tags": ["Servers"] }
+            },
+            "/api/v1/publish": {
+                "post": { "summary": "Publish a server to the registry", "tags": ["Publishing"] }
+            },
+            "/api/v1/validate": {
+                "post": { "summary": "Validate a server entry without publishing", "tags": ["Publishing"] }
+            },
+            "/api/v1/stats": {
+                "get": { "summary": "Aggregate registry statistics", "tags": ["Analytics"] }
+            },
+            "/api/v1/tools": {
+                "get": { "summary": "List all unique tools across servers", "tags": ["Discovery"] }
+            },
+            "/api/v1/prompts": {
+                "get": { "summary": "List all unique prompts across servers", "tags": ["Discovery"] }
+            },
+            "/api/v1/tags": {
+                "get": { "summary": "List all unique tags across servers", "tags": ["Discovery"] }
+            },
+            "/api/v1/categories": {
+                "get": { "summary": "List servers grouped by category", "tags": ["Discovery"] }
+            },
+            "/api/v1/trending": {
+                "get": { "summary": "Top servers by downloads", "tags": ["Analytics"] }
+            },
+            "/api/v1/graph": {
+                "get": { "summary": "Tool-sharing graph between servers", "tags": ["Discovery"] }
+            },
+        }
+    }))
+}
+
+/// GET /api/v1/servers/:owner/:name/dependents — find servers that share tools
+pub async fn dependents(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+    Query(params): Query<SimilarQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let limit = params.limit.unwrap_or(10).min(50);
+    let db = db.lock().await;
+    let target = db
+        .get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+    if target.tools.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "server": format!("{owner}/{name}"),
+            "dependents": [],
+            "total": 0,
+            "message": "Server has no tools declared",
+        })));
+    }
+
+    let target_tools: std::collections::HashSet<&str> =
+        target.tools.iter().map(|s| s.as_str()).collect();
+
+    let (all_servers, _) = db.list_servers(1, 1000)?;
+
+    let mut dependents: Vec<serde_json::Value> = all_servers
+        .iter()
+        .filter(|s| !(s.owner == owner && s.name == name))
+        .filter_map(|s| {
+            let s_tools: std::collections::HashSet<&str> =
+                s.tools.iter().map(|t| t.as_str()).collect();
+            let shared: Vec<String> = target_tools
+                .intersection(&s_tools)
+                .map(|t| t.to_string())
+                .collect();
+            if shared.is_empty() {
+                None
+            } else {
+                Some(serde_json::json!({
+                    "owner": s.owner,
+                    "name": s.name,
+                    "full_name": s.full_name(),
+                    "shared_tools": shared,
+                    "shared_count": shared.len(),
+                    "downloads": s.downloads,
+                }))
+            }
+        })
+        .collect();
+
+    dependents.sort_by(|a, b| {
+        b["shared_count"]
+            .as_u64()
+            .unwrap_or(0)
+            .cmp(&a["shared_count"].as_u64().unwrap_or(0))
+    });
+    dependents.truncate(limit);
+
+    let total = dependents.len();
+    Ok(Json(serde_json::json!({
+        "server": format!("{owner}/{name}"),
+        "dependents": dependents,
+        "total": total,
+    })))
+}

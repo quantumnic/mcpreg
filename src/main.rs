@@ -387,6 +387,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show the tool-sharing graph between servers
+    Graph {
+        /// Minimum number of shared tools to show a connection (default: 1)
+        #[arg(long, default_value = "1")]
+        min_shared: usize,
+        /// Maximum number of edges to display (default: 30)
+        #[arg(short = 'n', long, default_value = "30")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -486,6 +498,7 @@ async fn main() {
         }
         Commands::Summary { json } => commands::summary::run(json),
         Commands::Audit { json } => commands::audit::run(json),
+        Commands::Graph { min_shared, limit, json } => commands::graph::run(min_shared, limit, json),
         Commands::Completions { shell } => commands::completions::run(shell),
         Commands::Serve { bind, db } => {
             let db_path = match db {

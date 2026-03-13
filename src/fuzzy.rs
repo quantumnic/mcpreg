@@ -64,16 +64,21 @@ pub fn fuzzy_score(query: &str, candidate: &str, max_distance: usize) -> Option<
     if q == c {
         return Some(0);
     }
-    if c.contains(&q) {
+    // Prefix match ranks highest after exact match
+    if c.starts_with(&q) {
         return Some(1);
     }
-    if is_subsequence(&q, &c) {
+    // Non-prefix substring match
+    if c.contains(&q) {
         return Some(2);
+    }
+    if is_subsequence(&q, &c) {
+        return Some(3);
     }
 
     let dist = levenshtein(&q, &c);
     if dist <= max_distance {
-        Some(2 + dist)
+        Some(3 + dist)
     } else {
         None
     }
@@ -155,21 +160,35 @@ mod tests {
     }
 
     #[test]
-    fn test_fuzzy_score_substring() {
+    fn test_fuzzy_score_prefix() {
+        // "file" is a prefix of "filesystem" → score = 1
         assert_eq!(fuzzy_score("file", "filesystem", 3), Some(1));
     }
 
     #[test]
+    fn test_fuzzy_score_substring() {
+        // "system" is a non-prefix substring → score = 2
+        assert_eq!(fuzzy_score("system", "filesystem", 3), Some(2));
+    }
+
+    #[test]
     fn test_fuzzy_score_subsequence() {
-        assert_eq!(fuzzy_score("fstm", "filesystem", 3), Some(2));
+        assert_eq!(fuzzy_score("fstm", "filesystem", 3), Some(3));
     }
 
     #[test]
     fn test_fuzzy_score_levenshtein() {
-        // "filesytem" is a subsequence of "filesystem" → score = 2
-        assert_eq!(fuzzy_score("filesytem", "filesystem", 3), Some(2));
-        // "flsystm" is NOT a substring but has edit distance 3 → score = 2 + 3 = 5
+        // "filesytem" is a subsequence of "filesystem" → score = 3
+        assert_eq!(fuzzy_score("filesytem", "filesystem", 3), Some(3));
         assert_eq!(fuzzy_score("xyzabc", "filesystem", 2), None);
+    }
+
+    #[test]
+    fn test_fuzzy_score_prefix_beats_substring() {
+        // Prefix should score better than non-prefix substring
+        let prefix_score = fuzzy_score("file", "filesystem", 3).unwrap();
+        let substring_score = fuzzy_score("system", "filesystem", 3).unwrap();
+        assert!(prefix_score < substring_score, "Prefix should rank higher than substring");
     }
 
     #[test]

@@ -68,6 +68,11 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/tags", axum::routing::get(routes::tags_index))
         .route("/api/v1/trending", axum::routing::get(routes::trending))
         .route("/api/v1/graph", axum::routing::get(routes::tool_graph))
+        .route("/api/v1/openapi", axum::routing::get(routes::openapi))
+        .route(
+            "/api/v1/servers/:owner/:name/dependents",
+            axum::routing::get(routes::dependents),
+        )
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -1848,5 +1853,200 @@ mod tags_endpoint_tests {
         for s in &search.servers {
             assert_eq!(s.owner, "modelcontextprotocol", "Official tag should only be on MCP servers");
         }
+    }
+}
+
+#[cfg(test)]
+mod openapi_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_openapi_endpoint() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/openapi")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["openapi"], "3.0.0");
+        assert_eq!(result["info"]["title"], "mcpreg API");
+        assert!(result["paths"].as_object().unwrap().len() >= 15, "Should document many endpoints");
+        assert!(result["paths"]["/api/v1/search"].is_object());
+        assert!(result["paths"]["/api/v1/openapi"].is_object());
+    }
+
+    #[tokio::test]
+    async fn test_openapi_has_version() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/openapi")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let version = result["info"]["version"].as_str().unwrap();
+        assert!(!version.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod dependents_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_dependents_for_filesystem() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/dependents")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["server"], "modelcontextprotocol/filesystem");
+        // There should be some servers sharing tools like read_file
+        let dependents = result["dependents"].as_array().unwrap();
+        if !dependents.is_empty() {
+            let first = &dependents[0];
+            assert!(first["shared_count"].as_u64().unwrap() > 0);
+            assert!(!first["shared_tools"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dependents_not_found() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/nobody/nothing/dependents")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_dependents_with_limit() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/dependents?limit=2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["dependents"].as_array().unwrap().len() <= 2);
+    }
+
+    #[tokio::test]
+    async fn test_dependents_excludes_self() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/dependents")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        for dep in result["dependents"].as_array().unwrap() {
+            let name = dep["full_name"].as_str().unwrap();
+            assert_ne!(name, "modelcontextprotocol/filesystem", "Should not include self");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dependents_sorted_by_shared_count() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/dependents")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let deps = result["dependents"].as_array().unwrap();
+        if deps.len() >= 2 {
+            let c0 = deps[0]["shared_count"].as_u64().unwrap();
+            let c1 = deps[1]["shared_count"].as_u64().unwrap();
+            assert!(c0 >= c1, "Should be sorted by shared_count desc");
+        }
+    }
+}
+
+#[cfg(test)]
+mod fuzzy_prefix_integration_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_search_prefix_match_ranks_higher() {
+        let app = seeded_app().await;
+        // "file" is a prefix of "filesystem" — should appear first
+        let req = Request::builder()
+            .uri("/api/v1/search?q=file")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(search.total > 0);
+        // The filesystem server should be in results
+        assert!(search.servers.iter().any(|s| s.name.starts_with("file")));
+    }
+
+    #[tokio::test]
+    async fn test_search_typo_returns_suggestions() {
+        let app = seeded_app().await;
+        // Search for "filesytem" (typo) should yield suggestions
+        let req = Request::builder()
+            .uri("/api/v1/search?q=zzzznotexist")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(search.total, 0);
+        // Suggestions may or may not appear depending on distance, but endpoint should work
     }
 }

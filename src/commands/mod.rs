@@ -12,6 +12,7 @@ pub mod deps;
 pub mod doctor;
 pub mod env;
 pub mod export;
+pub mod graph;
 pub mod health;
 pub mod history;
 pub mod info;
