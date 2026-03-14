@@ -521,6 +521,22 @@ enum Commands {
     /// Manage named server profiles (save, load, share server collections)
     #[command(subcommand)]
     Profile(ProfileCommands),
+    /// Manage server name aliases (shortcuts for owner/name references)
+    Alias {
+        /// Action: list, set, remove
+        #[arg(default_value = "list")]
+        action: Option<String>,
+        /// Alias name (for set/remove)
+        alias: Option<String>,
+        /// Target server (owner/name) for set
+        target: Option<String>,
+    },
+    /// Clean up stale mcpreg data (temp files, old backups)
+    Clean {
+        /// Show what would be cleaned without deleting
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Explain why a server might be useful based on your installed servers
     Why {
         /// Server reference (owner/name)
@@ -776,6 +792,10 @@ async fn main() {
             FavoriteCommands::Remove { server } => commands::favorites::remove(&server),
             FavoriteCommands::List { json } => commands::favorites::list(json),
         },
+        Commands::Alias { action, alias, target } => {
+            commands::alias::run_alias(action, alias, target)
+        }
+        Commands::Clean { dry_run } => commands::clean::run_clean(dry_run),
         Commands::Why { server, json } => commands::why::run(&server, json),
         Commands::Inspect { server, json } => commands::inspect::run(&server, json),
         Commands::Top { by, limit, json } => commands::top::run(&by, limit, json),

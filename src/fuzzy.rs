@@ -814,3 +814,116 @@ mod bigram_tests {
         assert!((bigram_similarity("ab", "cd") - 0.0).abs() < f64::EPSILON);
     }
 }
+
+#[cfg(test)]
+mod additional_fuzzy_tests {
+    use super::*;
+
+    #[test]
+    fn test_suggest_empty_haystack() {
+        let candidates: Vec<String> = vec![];
+        let results = suggest("test", &candidates, 3);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_best_matches_empty_query() {
+        let candidates = vec!["hello".to_string(), "world".to_string()];
+        let results = best_matches("", &candidates, 0.0, 5);
+        // Just verify no panic
+        let _ = results;
+    }
+
+    #[test]
+    fn test_combined_similarity_exact() {
+        let score = combined_similarity("filesystem", "filesystem");
+        assert!(score > 0.99, "Exact match should have near-perfect score, got {score}");
+    }
+
+    #[test]
+    fn test_combined_similarity_partial() {
+        let score = combined_similarity("file", "filesystem");
+        assert!(score > 0.0, "Partial match should have positive score");
+        assert!(score < 1.0, "Partial match should not be perfect");
+    }
+
+    #[test]
+    fn test_best_matches_limit_respected() {
+        let candidates: Vec<String> = (0..100).map(|i| format!("server{i}")).collect();
+        let results = best_matches("server", &candidates, 0.0, 3);
+        assert!(results.len() <= 3);
+    }
+
+    #[test]
+    fn test_bigram_similarity_identical() {
+        let score = bigram_similarity("hello", "hello");
+        assert!((score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_bigram_similarity_different() {
+        let score = bigram_similarity("abc", "xyz");
+        assert!(score < 0.5, "Completely different strings should have low similarity");
+    }
+
+    #[test]
+    fn test_acronym_match_positive() {
+        assert!(acronym_match("fs", "file-system"));
+    }
+
+    #[test]
+    fn test_acronym_match_negative() {
+        assert!(!acronym_match("xyz", "file-system"));
+    }
+
+    #[test]
+    fn test_jaro_winkler_identical() {
+        let score = jaro_winkler("test", "test");
+        assert!((score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_jaro_winkler_different() {
+        let score = jaro_winkler("abc", "xyz");
+        assert!(score < 0.5);
+    }
+
+    #[test]
+    fn test_normalized_levenshtein_identical() {
+        let score = normalized_levenshtein("hello", "hello");
+        assert!((score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_normalized_levenshtein_empty() {
+        let score = normalized_levenshtein("", "");
+        assert!((score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_tokenize_splits_correctly() {
+        let tokens = tokenize("hello world-test");
+        assert!(tokens.contains(&"hello".to_string()));
+        assert!(tokens.contains(&"world".to_string()));
+        assert!(tokens.contains(&"test".to_string()));
+    }
+
+    #[test]
+    fn test_all_tokens_match_basic() {
+        assert!(all_tokens_match("file system", "filesystem-access"));
+    }
+
+    #[test]
+    fn test_is_subsequence() {
+        assert!(is_subsequence("fss", "filesystem"));
+        assert!(!is_subsequence("xyz", "filesystem"));
+    }
+
+    #[test]
+    fn test_unicode_no_panic() {
+        let _score = combined_similarity("café", "cafe");
+        let _jw = jaro_winkler("naïve", "naive");
+        let _lev = levenshtein("résumé", "resume");
+        // Just verify no panics with unicode
+    }
+}

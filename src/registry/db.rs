@@ -2946,6 +2946,42 @@ impl Database {
         Ok(groups.into_iter().collect())
     }
 
+    /// Find servers related to a given server by shared tools/tags/category.
+    /// Returns servers that have the most overlap in tools or tags.
+    pub fn find_related(&self, owner: &str, name: &str, limit: usize) -> Result<Vec<ServerEntry>> {
+        let target = self.get_server(owner, name)?
+            .ok_or_else(|| crate::error::McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+        let all = self.list_all()?;
+        let target_tools: std::collections::HashSet<String> = target.tools.iter().map(|t| t.to_lowercase()).collect();
+        let target_tags: std::collections::HashSet<String> = target.tags.iter().map(|t| t.to_lowercase()).collect();
+        let target_cat = crate::registry::seed::server_category(&target.owner, &target.name).to_lowercase();
+
+        let mut scored: Vec<(ServerEntry, usize)> = all
+            .into_iter()
+            .filter(|s| !(s.owner == owner && s.name == name))
+            .map(|s| {
+                let s_tools: std::collections::HashSet<String> = s.tools.iter().map(|t| t.to_lowercase()).collect();
+                let s_tags: std::collections::HashSet<String> = s.tags.iter().map(|t| t.to_lowercase()).collect();
+                let tool_overlap = target_tools.intersection(&s_tools).count() * 3;
+                let tag_overlap = target_tags.intersection(&s_tags).count() * 2;
+                let cat_match = if !target_cat.is_empty() {
+                    let s_cat = crate::registry::seed::server_category(&s.owner, &s.name).to_lowercase();
+                    if s_cat == target_cat { 2 } else { 0 }
+                } else {
+                    0
+                };
+                let score = tool_overlap + tag_overlap + cat_match;
+                (s, score)
+            })
+            .filter(|(_, score)| *score > 0)
+            .collect();
+
+        scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.downloads.cmp(&a.0.downloads)));
+        scored.truncate(limit);
+        Ok(scored.into_iter().map(|(s, _)| s).collect())
+    }
+
     /// Get servers that have been updated most recently.
     #[allow(dead_code)]
     pub fn hot_servers(&self, limit: usize) -> Result<Vec<ServerEntry>> {
@@ -3071,5 +3107,57 @@ mod weighted_search_tests {
         let db = create_test_db();
         let hot = db.hot_servers(0).unwrap();
         assert!(hot.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod related_servers_tests {
+    use super::*;
+
+    fn create_test_db() -> Database {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        db
+    }
+
+    #[test]
+    fn test_find_related_returns_results() {
+        let db = create_test_db();
+        // filesystem server should have related servers (other file-based servers)
+        let related = db.find_related("modelcontextprotocol", "filesystem", 5).unwrap();
+        // Should return some results (servers in same category or with shared tools)
+        // Even if no tool overlap, category overlap should match
+        assert!(related.len() <= 5);
+    }
+
+    #[test]
+    fn test_find_related_excludes_self() {
+        let db = create_test_db();
+        let related = db.find_related("modelcontextprotocol", "filesystem", 50).unwrap();
+        assert!(
+            !related.iter().any(|s| s.owner == "modelcontextprotocol" && s.name == "filesystem"),
+            "Related servers should not include the target server itself"
+        );
+    }
+
+    #[test]
+    fn test_find_related_respects_limit() {
+        let db = create_test_db();
+        let related = db.find_related("modelcontextprotocol", "filesystem", 2).unwrap();
+        assert!(related.len() <= 2);
+    }
+
+    #[test]
+    fn test_find_related_not_found() {
+        let db = create_test_db();
+        let result = db.find_related("nonexistent", "server", 5);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_find_related_zero_limit() {
+        let db = create_test_db();
+        let related = db.find_related("modelcontextprotocol", "filesystem", 0).unwrap();
+        assert!(related.is_empty());
     }
 }

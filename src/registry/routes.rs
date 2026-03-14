@@ -2253,6 +2253,23 @@ pub struct BulkSearchBody {
     pub limit: Option<usize>,
 }
 
+/// Find servers related to a given server (shared tools, tags, category).
+pub async fn related_servers(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+    Query(params): Query<LimitQuery>,
+) -> Result<Json<SearchResponse>, McpRegError> {
+    let limit = params.limit.unwrap_or(10).min(50);
+    let db = db.lock().await;
+    let servers = db.find_related(&owner, &name, limit)?;
+    let total = servers.len();
+    Ok(Json(SearchResponse {
+        servers,
+        total,
+        suggestions: None,
+    }))
+}
+
 /// Recently published versions across all servers.
 pub async fn recent_activity(
     State(db): State<DbState>,

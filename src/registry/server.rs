@@ -117,6 +117,10 @@ pub fn build_router(db_state: DbState) -> Router {
             axum::routing::post(routes::unstar_server),
         )
         .route("/api/v1/leaderboard", axum::routing::get(routes::leaderboard))
+        .route(
+            "/api/v1/servers/:owner/:name/related",
+            axum::routing::get(routes::related_servers),
+        )
         .route("/api/v1/matrix", axum::routing::get(routes::matrix))
         .route(
             "/api/v1/servers/:owner/:name/badge",
@@ -5022,5 +5026,60 @@ mod stars_in_search_sort_tests {
         assert_eq!(leaderboard.len(), 3);
         // alpha has 100 stars * 10 + 500 downloads = 1500 (highest)
         assert_eq!(leaderboard[0]["server"], "test/alpha");
+    }
+}
+
+#[cfg(test)]
+mod related_api_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+    use crate::registry::db::Database;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn app_with_seeded_db() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_related_returns_200() {
+        let app = app_with_seeded_db().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/related")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_related_with_limit() {
+        let app = app_with_seeded_db().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/related?limit=2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(result.servers.len() <= 2);
+    }
+
+    #[tokio::test]
+    async fn test_api_related_not_found() {
+        let app = app_with_seeded_db().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/nonexistent/server99/related")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Should return error (404 or 500 depending on error handling)
+        assert_ne!(resp.status(), StatusCode::OK);
     }
 }
