@@ -80,6 +80,9 @@ enum Commands {
         /// Filter by tag (e.g. "ai", "database", "web")
         #[arg(long)]
         tag: Option<String>,
+        /// Filter by license (e.g. "MIT", "Apache-2.0")
+        #[arg(long)]
+        license: Option<String>,
     },
     /// Install an MCP server and add it to claude_desktop_config.json
     Install {
@@ -463,6 +466,26 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Deep inspection of a server (info + quality score + config + similar)
+    Inspect {
+        /// Server reference (owner/name)
+        server: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show top servers ranked by various criteria (tools, resources, downloads, etc.)
+    Top {
+        /// Ranking criterion: tools, resources, prompts, downloads, newest, category
+        #[arg(default_value = "tools")]
+        by: String,
+        /// Maximum number of results (default: 10)
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -565,7 +588,8 @@ async fn main() {
             author,
             owner,
             tag,
-        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, regex, verbose, min_downloads, tool.as_deref(), transport.as_deref(), author.as_deref(), owner.as_deref(), tag.as_deref()).await,
+            license,
+        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, regex, verbose, min_downloads, tool.as_deref(), transport.as_deref(), author.as_deref(), owner.as_deref(), tag.as_deref(), license.as_deref()).await,
         Commands::Install { server } => commands::install::run(&server).await,
         Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
@@ -667,6 +691,8 @@ async fn main() {
             FavoriteCommands::List { json } => commands::favorites::list(json),
         },
         Commands::Why { server, json } => commands::why::run(&server, json),
+        Commands::Inspect { server, json } => commands::inspect::run(&server, json),
+        Commands::Top { by, limit, json } => commands::top::run(&by, limit, json),
     };
 
     if let Err(e) = result {

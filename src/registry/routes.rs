@@ -32,6 +32,8 @@ pub struct SearchQuery {
     pub resource: Option<String>,
     /// Exclude deprecated servers from results (default: false)
     pub exclude_deprecated: Option<bool>,
+    /// Filter by license (e.g. "MIT", "Apache")
+    pub license: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -117,6 +119,12 @@ pub async fn search(
     // Exclude deprecated servers when requested
     if params.exclude_deprecated.unwrap_or(false) {
         servers.retain(|s| !s.deprecated);
+    }
+
+    // Server-side license filter
+    if let Some(ref license) = params.license {
+        let lic_lower = license.to_lowercase();
+        servers.retain(|s| s.license.to_lowercase().contains(&lic_lower));
     }
 
     // Server-side sorting

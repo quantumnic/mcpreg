@@ -21,6 +21,7 @@ pub async fn run(
     author_filter: Option<&str>,
     owner_filter: Option<&str>,
     tag_filter: Option<&str>,
+    license_filter: Option<&str>,
 ) -> Result<()> {
     // Regex mode always uses local DB
     let mut servers = if regex_mode {
@@ -113,6 +114,12 @@ pub async fn run(
         servers.retain(|s| {
             s.tags.iter().any(|t| t.to_lowercase().contains(&tag_lower))
         });
+    }
+
+    // License filter
+    if let Some(license) = license_filter {
+        let lic_lower = license.to_lowercase();
+        servers.retain(|s| s.license.to_lowercase().contains(&lic_lower));
     }
 
     // Client-side sorting
