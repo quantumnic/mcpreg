@@ -2243,6 +2243,122 @@ impl Database {
         }
         Ok(entries)
     }
+
+    /// Search servers using a regex pattern against name, description, owner, and tools.
+    pub fn search_regex(&self, pattern: &str) -> Result<Vec<ServerEntry>> {
+        let re = regex::Regex::new(pattern).map_err(|e| {
+            crate::error::McpRegError::Validation(format!("Invalid regex: {e}"))
+        })?;
+
+        let all = self.list_all()?;
+        let mut matched: Vec<ServerEntry> = all
+            .into_iter()
+            .filter(|s| {
+                re.is_match(&s.name)
+                    || re.is_match(&s.description)
+                    || re.is_match(&s.owner)
+                    || re.is_match(&s.full_name())
+                    || s.tools.iter().any(|t| re.is_match(t))
+                    || s.tags.iter().any(|t| re.is_match(t))
+            })
+            .collect();
+        matched.sort_by(|a, b| b.downloads.cmp(&a.downloads));
+        Ok(matched)
+    }
+}
+
+#[cfg(test)]
+mod regex_search_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+
+    fn create_test_db() -> Database {
+        let db = Database::open_in_memory().unwrap();
+        let entries = vec![
+            ("org", "filesystem", "File system access", vec!["read_file", "write_file"]),
+            ("org", "sqlite", "SQLite database", vec!["query", "execute"]),
+            ("org", "web-search", "Search the web", vec!["brave_search"]),
+            ("org", "postgres-db", "PostgreSQL access", vec!["pg_query"]),
+        ];
+        for (owner, name, desc, tools) in entries {
+            let entry = ServerEntry {
+                id: None,
+                owner: owner.into(),
+                name: name.into(),
+                version: "1.0.0".into(),
+                description: desc.into(),
+                author: owner.into(),
+                license: "MIT".into(),
+                repository: String::new(),
+                command: "node".into(),
+                args: vec![],
+                transport: "stdio".into(),
+                tools: tools.into_iter().map(String::from).collect(),
+                resources: vec![],
+                prompts: vec![],
+                tags: vec![],
+                env: Default::default(),
+                homepage: String::new(),
+                deprecated: false,
+                deprecated_by: None,
+                downloads: 100,
+                created_at: None,
+                updated_at: None,
+            };
+            db.upsert_server(&entry).unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn test_search_regex_name_match() {
+        let db = create_test_db();
+        let results = db.search_regex("file.*").unwrap();
+        assert!(results.iter().any(|s| s.name == "filesystem"));
+    }
+
+    #[test]
+    fn test_search_regex_alternation() {
+        let db = create_test_db();
+        let results = db.search_regex("sqlite|postgres").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_search_regex_tool_match() {
+        let db = create_test_db();
+        let results = db.search_regex("brave_search").unwrap();
+        assert!(results.iter().any(|s| s.name == "web-search"));
+    }
+
+    #[test]
+    fn test_search_regex_no_match() {
+        let db = create_test_db();
+        let results = db.search_regex("^zzz$").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_regex_invalid_pattern() {
+        let db = create_test_db();
+        let result = db.search_regex("[invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_search_regex_case_sensitive() {
+        let db = create_test_db();
+        // Regex is case-sensitive by default
+        let results = db.search_regex("(?i)FILE").unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_search_regex_suffix_pattern() {
+        let db = create_test_db();
+        let results = db.search_regex("db$").unwrap();
+        assert!(results.iter().any(|s| s.name == "postgres-db"));
+    }
 }
 
 #[cfg(test)]

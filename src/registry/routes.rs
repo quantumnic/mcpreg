@@ -287,13 +287,49 @@ pub async fn stats(
 ) -> Result<Json<serde_json::Value>, McpRegError> {
     let db = db.lock().await;
     let s = db.stats()?;
+
+    // Extended stats: category breakdown, license distribution, capability totals
+    let all_servers = db.list_all()?;
+    let mut categories: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut license_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut total_tools = 0usize;
+    let mut total_prompts = 0usize;
+    let mut total_resources = 0usize;
+    let mut deprecated_count = 0usize;
+
+    for srv in &all_servers {
+        let cat = crate::registry::seed::server_category(&srv.owner, &srv.name).to_string();
+        *categories.entry(cat).or_insert(0) += 1;
+        if !srv.license.is_empty() {
+            *license_counts.entry(srv.license.clone()).or_insert(0) += 1;
+        }
+        total_tools += srv.tools.len();
+        total_prompts += srv.prompts.len();
+        total_resources += srv.resources.len();
+        if srv.deprecated {
+            deprecated_count += 1;
+        }
+    }
+
+    let mut cats_sorted: Vec<_> = categories.into_iter().collect();
+    cats_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut licenses_sorted: Vec<_> = license_counts.into_iter().collect();
+    licenses_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
     Ok(Json(serde_json::json!({
         "total_servers": s.total_servers,
         "total_downloads": s.total_downloads,
         "unique_owners": s.unique_owners,
         "avg_tools": s.avg_tools,
+        "total_tools": total_tools,
+        "total_prompts": total_prompts,
+        "total_resources": total_resources,
+        "deprecated_servers": deprecated_count,
         "top_servers": s.top_servers.iter().map(|(n, d)| serde_json::json!({"name": n, "downloads": d})).collect::<Vec<_>>(),
         "transports": s.transport_counts.iter().map(|(t, c)| serde_json::json!({"transport": t, "count": c})).collect::<Vec<_>>(),
+        "categories": cats_sorted.iter().map(|(c, n)| serde_json::json!({"category": c, "count": n})).collect::<Vec<_>>(),
+        "licenses": licenses_sorted.iter().take(10).map(|(l, c)| serde_json::json!({"license": l, "count": c})).collect::<Vec<_>>(),
     })))
 }
 

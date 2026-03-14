@@ -56,6 +56,9 @@ enum Commands {
         /// Search the local database instead of the remote registry
         #[arg(long)]
         offline: bool,
+        /// Use regex pattern matching for the query
+        #[arg(long)]
+        regex: bool,
         /// Show relevance scores in output
         #[arg(short = 'v', long)]
         verbose: bool,
@@ -141,6 +144,9 @@ enum Commands {
         /// Output file path (prints to stdout if not given)
         #[arg(short, long)]
         output: Option<String>,
+        /// Output format: json (default), toml, env
+        #[arg(short, long)]
+        format: Option<String>,
     },
     /// Update installed MCP servers (all or a specific one)
     Update {
@@ -551,6 +557,7 @@ async fn main() {
             limit,
             compact,
             offline,
+            regex,
             verbose,
             min_downloads,
             tool,
@@ -558,7 +565,7 @@ async fn main() {
             author,
             owner,
             tag,
-        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, verbose, min_downloads, tool.as_deref(), transport.as_deref(), author.as_deref(), owner.as_deref(), tag.as_deref()).await,
+        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, regex, verbose, min_downloads, tool.as_deref(), transport.as_deref(), author.as_deref(), owner.as_deref(), tag.as_deref()).await,
         Commands::Install { server } => commands::install::run(&server).await,
         Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,
@@ -574,7 +581,10 @@ async fn main() {
         Commands::Tags { json } => commands::tags::run(json),
         Commands::Resources(args) => commands::resources::run(&args, &config).await,
         Commands::Whohas(args) => commands::whohas::run(&args, &config).await,
-        Commands::Export { output } => commands::export::run(output.as_deref()),
+        Commands::Export { output, format } => {
+            let fmt = commands::export::ExportFormat::from_str_opt(format.as_deref());
+            commands::export::run(output.as_deref(), fmt)
+        }
         Commands::Similar { server, limit, json } => commands::similar::run(&server, limit, json),
         Commands::Random { category, json } => commands::random::run(category.as_deref(), json),
         Commands::Count { by, json } => commands::count::run(Some(&by), json),

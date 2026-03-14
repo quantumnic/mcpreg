@@ -503,7 +503,7 @@ mod extended_tests {
     #[test]
     fn test_normalized_levenshtein_range() {
         let nl = normalized_levenshtein("hello", "world");
-        assert!(nl >= 0.0 && nl <= 1.0, "Should be in [0, 1]: {nl}");
+        assert!((0.0..=1.0).contains(&nl), "Should be in [0, 1]: {nl}");
     }
 
     #[test]

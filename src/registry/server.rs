@@ -368,6 +368,13 @@ mod new_endpoint_tests {
         assert!(stats["total_downloads"].as_i64().unwrap() > 0);
         assert!(stats["unique_owners"].as_u64().unwrap() > 0);
         assert!(stats["top_servers"].as_array().unwrap().len() == 5);
+        // Enhanced stats fields
+        assert!(stats["categories"].is_array());
+        assert!(stats["licenses"].is_array());
+        assert!(stats.get("total_tools").is_some());
+        assert!(stats.get("total_prompts").is_some());
+        assert!(stats.get("total_resources").is_some());
+        assert!(stats.get("deprecated_servers").is_some());
     }
 
     #[tokio::test]
@@ -3409,7 +3416,6 @@ mod deprecated_tests {
 
 #[cfg(test)]
 mod deprecation_db_tests {
-    use super::*;
     use crate::api::types::ServerEntry;
 
     fn make_entry(owner: &str, name: &str, deprecated: bool, deprecated_by: Option<&str>) -> ServerEntry {
@@ -3492,7 +3498,7 @@ mod popular_tools_tests {
         let body: serde_json::Value =
             serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
         assert!(body["total"].as_u64().unwrap() > 0);
-        assert!(body["tools"].as_array().unwrap().len() > 0);
+        assert!(!body["tools"].as_array().unwrap().is_empty());
         // Each tool should have required fields
         let first = &body["tools"][0];
         assert!(first["tool"].is_string());
@@ -3822,5 +3828,73 @@ mod bundle_and_score_tests {
         let paths = result["paths"].as_object().unwrap();
         assert!(paths.contains_key("/api/v1/servers/{owner}/{name}/bundle"), "OpenAPI should document /bundle");
         assert!(paths.contains_key("/api/v1/servers/{owner}/{name}/score"), "OpenAPI should document /score");
+    }
+}
+
+#[cfg(test)]
+mod enhanced_stats_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let state: DbState = Arc::new(Mutex::new(db));
+        build_router(state)
+    }
+
+    #[tokio::test]
+    async fn test_enhanced_stats_has_categories() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/stats")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert!(body["categories"].is_array());
+        assert!(!body["categories"].as_array().unwrap().is_empty());
+        assert!(body["licenses"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_enhanced_stats_capability_totals() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/stats")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert!(body.get("total_tools").is_some());
+        assert!(body.get("total_prompts").is_some());
+        assert!(body.get("total_resources").is_some());
+        assert!(body.get("deprecated_servers").is_some());
+        // total_tools should be > 0 for seeded data
+        assert!(body["total_tools"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_enhanced_stats_empty_db() {
+        let db = Database::open_in_memory().unwrap();
+        let state: DbState = Arc::new(Mutex::new(db));
+        let app = build_router(state);
+
+        let req = Request::builder()
+            .uri("/api/v1/stats")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert_eq!(body["total_servers"].as_u64().unwrap(), 0);
+        assert_eq!(body["total_tools"].as_u64().unwrap(), 0);
+        assert_eq!(body["deprecated_servers"].as_u64().unwrap(), 0);
     }
 }

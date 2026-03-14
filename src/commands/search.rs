@@ -13,6 +13,7 @@ pub async fn run(
     limit: Option<usize>,
     compact: bool,
     offline: bool,
+    regex_mode: bool,
     verbose: bool,
     min_downloads: Option<i64>,
     tool_filter: Option<&str>,
@@ -21,7 +22,15 @@ pub async fn run(
     owner_filter: Option<&str>,
     tag_filter: Option<&str>,
 ) -> Result<()> {
-    let mut servers = if offline {
+    // Regex mode always uses local DB
+    let mut servers = if regex_mode {
+        let db_path = Config::db_path()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "registry.db".to_string());
+        let db = Database::open(&db_path)?;
+        let _ = db.seed_default_servers();
+        db.search_regex(query)?
+    } else if offline {
         // Search local database directly
         let db_path = Config::db_path()
             .map(|p| p.to_string_lossy().to_string())
