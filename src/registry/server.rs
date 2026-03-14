@@ -100,6 +100,14 @@ pub fn build_router(db_state: DbState) -> Router {
             "/api/v1/compatibility/:owner_a/:name_a/:owner_b/:name_b",
             axum::routing::get(routes::compatibility),
         )
+        .route(
+            "/api/v1/servers/:owner/:name/bundle",
+            axum::routing::get(routes::recommend_bundle),
+        )
+        .route(
+            "/api/v1/servers/:owner/:name/score",
+            axum::routing::get(routes::server_score),
+        )
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -3582,5 +3590,237 @@ mod compatibility_tests {
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), 404);
+    }
+}
+
+#[cfg(test)]
+mod bundle_and_score_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_recommend_bundle() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/bundle")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["seed"], "modelcontextprotocol/filesystem");
+        assert!(result["total"].as_u64().unwrap() > 0);
+        let bundle = result["bundle"].as_array().unwrap();
+        assert!(!bundle.is_empty());
+        assert_eq!(bundle[0]["rank"], 1);
+        // Should not include the seed server itself
+        for item in bundle {
+            assert_ne!(item["full_name"], "modelcontextprotocol/filesystem");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_recommend_bundle_with_limit() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/bundle?limit=3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["bundle"].as_array().unwrap().len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_api_recommend_bundle_not_found() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/nobody/nothing/bundle")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_api_server_score() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/score")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["server"], "modelcontextprotocol/filesystem");
+        assert!(result["score"].as_u64().unwrap() > 0);
+        assert!(result["max_score"].as_u64().unwrap() > 0);
+        assert!(result["percentage"].as_u64().unwrap() > 0);
+        assert!(result["grade"].is_string());
+        let checks = result["checks"].as_array().unwrap();
+        assert!(!checks.is_empty());
+        // Each check should have required fields
+        let first = &checks[0];
+        assert!(first["check"].is_string());
+        assert!(first["pass"].is_boolean());
+        assert!(first["points"].is_number());
+        assert!(first["max_points"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_api_server_score_not_found() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/nobody/nothing/score")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_api_server_score_grades() {
+        // Create a minimal server with few fields → should get low grade
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&crate::api::types::ServerEntry {
+            id: None,
+            owner: "min".into(),
+            name: "bare".into(),
+            version: "0.1.0".into(),
+            description: String::new(),
+            author: String::new(),
+            license: String::new(),
+            repository: String::new(),
+            command: "echo".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 0,
+            created_at: None,
+            updated_at: None,
+        }).unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        let app = build_router(db_state);
+
+        let req = Request::builder()
+            .uri("/api/v1/servers/min/bare/score")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let grade = result["grade"].as_str().unwrap();
+        // Bare server should get low grade (D or F)
+        assert!(grade == "D" || grade == "F", "Bare server should get low grade, got {grade}");
+    }
+
+    #[tokio::test]
+    async fn test_api_bundle_excludes_deprecated() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&crate::api::types::ServerEntry {
+            id: None,
+            owner: "test".into(),
+            name: "active".into(),
+            version: "1.0.0".into(),
+            description: "Active server".into(),
+            author: "test".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["read".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 100,
+            created_at: None,
+            updated_at: None,
+        }).unwrap();
+        db.upsert_server(&crate::api::types::ServerEntry {
+            id: None,
+            owner: "test".into(),
+            name: "old".into(),
+            version: "1.0.0".into(),
+            description: "Deprecated server".into(),
+            author: "test".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["write".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: true,
+            deprecated_by: Some("test/active".into()),
+            downloads: 50,
+            created_at: None,
+            updated_at: None,
+        }).unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        let app = build_router(db_state);
+
+        let req = Request::builder()
+            .uri("/api/v1/servers/test/active/bundle")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let bundle = result["bundle"].as_array().unwrap();
+        // Deprecated servers should not appear in bundle recommendations
+        for item in bundle {
+            assert_ne!(item["full_name"], "test/old", "Deprecated should be excluded from bundle");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_openapi_includes_bundle_and_score() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/openapi")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let paths = result["paths"].as_object().unwrap();
+        assert!(paths.contains_key("/api/v1/servers/{owner}/{name}/bundle"), "OpenAPI should document /bundle");
+        assert!(paths.contains_key("/api/v1/servers/{owner}/{name}/score"), "OpenAPI should document /score");
     }
 }

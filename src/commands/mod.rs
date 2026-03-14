@@ -44,3 +44,4 @@ pub mod update;
 pub mod validate;
 pub mod versions;
 pub mod which;
+pub mod profile;

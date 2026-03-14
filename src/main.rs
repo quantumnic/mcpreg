@@ -446,6 +446,9 @@ enum Commands {
     /// Manage your favorite/bookmarked servers
     #[command(subcommand)]
     Favorite(FavoriteCommands),
+    /// Manage named server profiles (save, load, share server collections)
+    #[command(subcommand)]
+    Profile(ProfileCommands),
     /// Explain why a server might be useful based on your installed servers
     Why {
         /// Server reference (owner/name)
@@ -453,6 +456,58 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileCommands {
+    /// Save currently installed servers as a named profile
+    Save {
+        /// Profile name
+        name: String,
+        /// Description of the profile
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+    /// List all saved profiles
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show details of a specific profile
+    Show {
+        /// Profile name
+        name: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a saved profile
+    Delete {
+        /// Profile name
+        name: String,
+    },
+    /// Apply a profile (install all servers in it)
+    Apply {
+        /// Profile name
+        name: String,
+        /// Show what would be installed without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Export a profile to a JSON file
+    Export {
+        /// Profile name
+        name: String,
+        /// Output file path (prints to stdout if not given)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Import a profile from a JSON file
+    Import {
+        /// Path to profile JSON file
+        file: String,
     },
 }
 
@@ -579,6 +634,21 @@ async fn main() {
             };
             registry::server::run_server(&bind, &db_path).await
         }
+        Commands::Profile(sub) => match sub {
+            ProfileCommands::Save { name, description } => {
+                commands::profile::run_save(&name, description.as_deref())
+            }
+            ProfileCommands::List { json } => commands::profile::run_list(json),
+            ProfileCommands::Show { name, json } => commands::profile::run_show(&name, json),
+            ProfileCommands::Delete { name } => commands::profile::run_delete(&name),
+            ProfileCommands::Apply { name, dry_run } => {
+                commands::profile::run_apply(&name, dry_run).await
+            }
+            ProfileCommands::Export { name, output } => {
+                commands::profile::run_export(&name, output.as_deref())
+            }
+            ProfileCommands::Import { file } => commands::profile::run_import(&file),
+        },
         Commands::Favorite(sub) => match sub {
             FavoriteCommands::Add { server, note } => {
                 commands::favorites::add(&server, note.as_deref())

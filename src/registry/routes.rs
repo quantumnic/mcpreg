@@ -11,6 +11,11 @@ use tokio::sync::Mutex;
 pub type DbState = Arc<Mutex<Database>>;
 
 #[derive(Deserialize)]
+pub struct LimitQuery {
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
 pub struct SearchQuery {
     pub q: Option<String>,
     pub category: Option<String>,
@@ -1187,6 +1192,27 @@ pub async fn openapi() -> Json<serde_json::Value> {
                     ]
                 }
             },
+            "/api/v1/servers/{owner}/{name}/bundle": {
+                "get": {
+                    "summary": "Recommend complementary servers to pair with the given server",
+                    "tags": ["Discovery"],
+                    "parameters": [
+                        {"name": "owner", "in": "path", "required": true},
+                        {"name": "name", "in": "path", "required": true},
+                        {"name": "limit", "in": "query", "description": "Max results (default 5, max 20)"},
+                    ]
+                }
+            },
+            "/api/v1/servers/{owner}/{name}/score": {
+                "get": {
+                    "summary": "Quality score for a server based on metadata completeness",
+                    "tags": ["Inspection"],
+                    "parameters": [
+                        {"name": "owner", "in": "path", "required": true},
+                        {"name": "name", "in": "path", "required": true},
+                    ]
+                }
+            },
         }
     }))
 }
@@ -1794,5 +1820,160 @@ pub async fn compatibility(
             "transport_match": a.transport == b.transport,
             "combined_tool_count": tools_a.len() + tools_b.len() - conflicting_tools.len(),
         }
+    })))
+}
+
+/// Recommend server bundles based on a seed server (servers commonly paired together).
+pub async fn recommend_bundle(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+    Query(params): Query<LimitQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let seed = db.get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+    let all = db.list_all()?;
+    let limit = params.limit.unwrap_or(5).min(20);
+
+    // Score each server based on tool overlap, category match, and complementary resources
+    let seed_tools: std::collections::HashSet<String> =
+        seed.tools.iter().map(|t| t.to_lowercase()).collect();
+    let seed_resources: std::collections::HashSet<String> =
+        seed.resources.iter().map(|r| r.to_lowercase()).collect();
+    let seed_cat = crate::registry::seed::server_category(&seed.owner, &seed.name).to_lowercase();
+
+    let mut scored: Vec<(crate::api::types::ServerEntry, i64)> = all
+        .into_iter()
+        .filter(|s| s.full_name() != seed.full_name() && !s.deprecated)
+        .map(|s| {
+            let s_tools: std::collections::HashSet<String> =
+                s.tools.iter().map(|t| t.to_lowercase()).collect();
+            let s_resources: std::collections::HashSet<String> =
+                s.resources.iter().map(|r| r.to_lowercase()).collect();
+            let s_cat = crate::registry::seed::server_category(&s.owner, &s.name).to_lowercase();
+
+            let mut score: i64 = 0;
+
+            // Complementary tools (tools the seed doesn't have) = good
+            let unique_tools = s_tools.difference(&seed_tools).count();
+            score += unique_tools as i64 * 10;
+
+            // Some tool overlap = related but not redundant
+            let shared_tools = s_tools.intersection(&seed_tools).count();
+            if shared_tools > 0 && shared_tools <= 2 {
+                score += 5;
+            }
+            // Too much overlap = redundant
+            if shared_tools > s_tools.len() / 2 && s_tools.len() > 2 {
+                score -= 20;
+            }
+
+            // Same category = related
+            if s_cat == seed_cat {
+                score += 15;
+            }
+
+            // Complementary resources
+            let new_resources = s_resources.difference(&seed_resources).count();
+            score += new_resources as i64 * 5;
+
+            // Popularity bonus (log scale)
+            if s.downloads > 0 {
+                score += (s.downloads as f64).log10() as i64;
+            }
+
+            (s, score)
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.truncate(limit);
+
+    let bundle: Vec<serde_json::Value> = scored
+        .iter()
+        .enumerate()
+        .map(|(i, (s, score))| {
+            serde_json::json!({
+                "rank": i + 1,
+                "full_name": s.full_name(),
+                "description": s.description,
+                "tools": s.tools,
+                "score": score,
+                "reason": if *score > 30 { "highly complementary" }
+                    else if *score > 15 { "good addition" }
+                    else { "related" },
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "seed": seed.full_name(),
+        "bundle": bundle,
+        "total": bundle.len(),
+    })))
+}
+
+/// Server health score — a quality metric based on completeness of metadata.
+pub async fn server_score(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let server = db.get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+    let mut score: u32 = 0;
+    let mut max_score: u32 = 0;
+    let mut checks: Vec<serde_json::Value> = Vec::new();
+
+    // Required fields (always present if published, but check quality)
+    let check = |name: &str, pass: bool, points: u32, checks: &mut Vec<serde_json::Value>, score: &mut u32, max: &mut u32| {
+        *max += points;
+        if pass {
+            *score += points;
+        }
+        checks.push(serde_json::json!({
+            "check": name,
+            "pass": pass,
+            "points": if pass { points } else { 0 },
+            "max_points": points,
+        }));
+    };
+
+    check("has_description", !server.description.is_empty(), 15, &mut checks, &mut score, &mut max_score);
+    check("has_author", !server.author.is_empty(), 10, &mut checks, &mut score, &mut max_score);
+    check("has_license", !server.license.is_empty(), 10, &mut checks, &mut score, &mut max_score);
+    check("has_repository", !server.repository.is_empty(), 10, &mut checks, &mut score, &mut max_score);
+    check("has_homepage", !server.homepage.is_empty(), 5, &mut checks, &mut score, &mut max_score);
+    check("has_tools", !server.tools.is_empty(), 15, &mut checks, &mut score, &mut max_score);
+    check("has_resources", !server.resources.is_empty(), 5, &mut checks, &mut score, &mut max_score);
+    check("has_prompts", !server.prompts.is_empty(), 5, &mut checks, &mut score, &mut max_score);
+    check("has_tags", !server.tags.is_empty(), 5, &mut checks, &mut score, &mut max_score);
+    check("multiple_tools", server.tools.len() >= 2, 5, &mut checks, &mut score, &mut max_score);
+    check("not_deprecated", !server.deprecated, 10, &mut checks, &mut score, &mut max_score);
+    check("has_downloads", server.downloads > 0, 5, &mut checks, &mut score, &mut max_score);
+
+    let percentage = if max_score > 0 {
+        (score as f64 / max_score as f64 * 100.0).round() as u32
+    } else {
+        0
+    };
+
+    let grade = match percentage {
+        90..=100 => "A",
+        80..=89 => "B",
+        70..=79 => "C",
+        60..=69 => "D",
+        _ => "F",
+    };
+
+    Ok(Json(serde_json::json!({
+        "server": server.full_name(),
+        "score": score,
+        "max_score": max_score,
+        "percentage": percentage,
+        "grade": grade,
+        "checks": checks,
     })))
 }

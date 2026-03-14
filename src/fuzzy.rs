@@ -581,3 +581,236 @@ mod extended_tests {
         assert!(!is_subsequence("abcdef", "abc"));
     }
 }
+
+#[allow(dead_code)]
+/// Compute bigram (character pair) similarity between two strings.
+/// Returns a value between 0.0 (no common bigrams) and 1.0 (identical bigrams).
+/// Bigrams are less sensitive to character transpositions than Levenshtein.
+pub fn bigram_similarity(a: &str, b: &str) -> f64 {
+    let a = a.to_lowercase();
+    let b = b.to_lowercase();
+
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+
+    if a_chars.len() < 2 && b_chars.len() < 2 {
+        return if a == b { 1.0 } else { 0.0 };
+    }
+    if a_chars.len() < 2 || b_chars.len() < 2 {
+        return 0.0;
+    }
+
+    let a_bigrams: Vec<(char, char)> = a_chars.windows(2).map(|w| (w[0], w[1])).collect();
+    let b_bigrams: Vec<(char, char)> = b_chars.windows(2).map(|w| (w[0], w[1])).collect();
+
+    let mut b_used = vec![false; b_bigrams.len()];
+    let mut matches = 0usize;
+
+    for ab in &a_bigrams {
+        for (j, bb) in b_bigrams.iter().enumerate() {
+            if !b_used[j] && ab == bb {
+                b_used[j] = true;
+                matches += 1;
+                break;
+            }
+        }
+    }
+
+    let total = a_bigrams.len() + b_bigrams.len();
+    if total == 0 {
+        return 1.0;
+    }
+    (2 * matches) as f64 / total as f64
+}
+
+#[allow(dead_code)]
+/// Combined similarity score using multiple algorithms.
+/// Returns a value between 0.0 (completely different) and 1.0 (identical).
+/// Combines Jaro-Winkler (40%), bigram (30%), and normalized Levenshtein (30%).
+pub fn combined_similarity(a: &str, b: &str) -> f64 {
+    let jw = jaro_winkler(a, b);
+    let bg = bigram_similarity(a, b);
+    let nl = normalized_levenshtein(a, b);
+    jw * 0.4 + bg * 0.3 + nl * 0.3
+}
+
+#[allow(dead_code)]
+/// Find the best matches using combined similarity scoring.
+/// Returns candidates with similarity >= threshold, sorted by similarity (best first).
+pub fn best_matches(
+    query: &str,
+    candidates: &[String],
+    threshold: f64,
+    max_results: usize,
+) -> Vec<(String, f64)> {
+    let mut scored: Vec<(String, f64)> = candidates
+        .iter()
+        .filter_map(|c| {
+            let name_part = c.rsplit('/').next().unwrap_or(c);
+            let sim_full = combined_similarity(query, c);
+            let sim_name = combined_similarity(query, name_part);
+            let sim = sim_full.max(sim_name);
+            if sim >= threshold {
+                Some((c.clone(), sim))
+            } else {
+                None
+            }
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(max_results);
+    scored
+}
+
+#[allow(dead_code)]
+/// Tokenize a query string into searchable tokens.
+/// Splits on whitespace, underscores, hyphens, and slashes.
+pub fn tokenize(query: &str) -> Vec<String> {
+    query
+        .to_lowercase()
+        .split(|c: char| c.is_whitespace() || c == '_' || c == '-' || c == '/')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+#[allow(dead_code)]
+/// Check if all tokens from the query appear in the candidate text.
+/// Useful for multi-word search queries.
+pub fn all_tokens_match(query: &str, candidate: &str) -> bool {
+    let tokens = tokenize(query);
+    let candidate_lower = candidate.to_lowercase();
+    tokens.iter().all(|t| candidate_lower.contains(t))
+}
+
+#[cfg(test)]
+mod bigram_tests {
+    use super::*;
+
+    #[test]
+    fn test_bigram_identical() {
+        let s = bigram_similarity("hello", "hello");
+        assert!((s - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_bigram_empty() {
+        assert!((bigram_similarity("", "") - 1.0).abs() < f64::EPSILON);
+        assert!((bigram_similarity("a", "b") - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_bigram_similar() {
+        let s = bigram_similarity("filesystem", "filesytem");
+        assert!(s > 0.7, "One missing char should still be similar: {s}");
+    }
+
+    #[test]
+    fn test_bigram_different() {
+        let s = bigram_similarity("abc", "xyz");
+        assert!(s < 0.1, "Completely different strings: {s}");
+    }
+
+    #[test]
+    fn test_bigram_case_insensitive() {
+        let s = bigram_similarity("Hello", "hello");
+        assert!((s - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_bigram_transposition() {
+        // Transpositions should have higher bigram similarity than substitutions
+        let trans = bigram_similarity("ab", "ba");
+        let subst = bigram_similarity("ab", "cd");
+        assert!(trans >= subst, "Transposition should score >= substitution");
+    }
+
+    #[test]
+    fn test_combined_similarity_identical() {
+        let s = combined_similarity("test", "test");
+        assert!((s - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_combined_similarity_typo() {
+        let s = combined_similarity("filesystem", "filesytem");
+        assert!(s > 0.8, "One-char typo should have high combined similarity: {s}");
+    }
+
+    #[test]
+    fn test_combined_similarity_different() {
+        let s = combined_similarity("abc", "xyz");
+        assert!(s < 0.3, "Very different strings should have low similarity: {s}");
+    }
+
+    #[test]
+    fn test_best_matches_finds_close() {
+        let candidates = vec![
+            "org/filesystem".into(),
+            "org/sqlite".into(),
+            "org/postgres".into(),
+        ];
+        let matches = best_matches("filesytem", &candidates, 0.5, 5);
+        assert!(!matches.is_empty());
+        assert_eq!(matches[0].0, "org/filesystem");
+    }
+
+    #[test]
+    fn test_best_matches_respects_threshold() {
+        let candidates = vec!["org/abc".into(), "org/xyz".into()];
+        let matches = best_matches("hello", &candidates, 0.9, 5);
+        assert!(matches.is_empty(), "Nothing should match at 0.9 threshold");
+    }
+
+    #[test]
+    fn test_best_matches_respects_max() {
+        let candidates: Vec<String> = (0..20).map(|i| format!("org/tool-{i}")).collect();
+        let matches = best_matches("tool", &candidates, 0.3, 3);
+        assert!(matches.len() <= 3);
+    }
+
+    #[test]
+    fn test_tokenize_basic() {
+        assert_eq!(tokenize("hello world"), vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn test_tokenize_separators() {
+        assert_eq!(tokenize("file_system-server/v2"), vec!["file", "system", "server", "v2"]);
+    }
+
+    #[test]
+    fn test_tokenize_empty() {
+        assert!(tokenize("").is_empty());
+        assert!(tokenize("   ").is_empty());
+    }
+
+    #[test]
+    fn test_all_tokens_match_basic() {
+        assert!(all_tokens_match("file system", "MCP filesystem server"));
+        assert!(!all_tokens_match("file database", "MCP filesystem server"));
+    }
+
+    #[test]
+    fn test_all_tokens_match_single() {
+        assert!(all_tokens_match("sql", "PostgreSQL database server"));
+    }
+
+    #[test]
+    fn test_all_tokens_match_empty_query() {
+        assert!(all_tokens_match("", "anything"));
+    }
+
+    #[test]
+    fn test_bigram_single_char_strings() {
+        // Single char strings have no bigrams
+        assert!((bigram_similarity("a", "a") - 1.0).abs() < f64::EPSILON);
+        assert!((bigram_similarity("a", "b") - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_bigram_two_char_strings() {
+        assert!((bigram_similarity("ab", "ab") - 1.0).abs() < f64::EPSILON);
+        assert!((bigram_similarity("ab", "cd") - 0.0).abs() < f64::EPSILON);
+    }
+}
