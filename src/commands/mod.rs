@@ -2,6 +2,8 @@ pub mod audit;
 pub mod backup;
 pub mod bundle;
 pub mod browse;
+pub mod exec;
+pub mod mirror;
 pub mod check;
 pub mod changelog;
 pub mod compare;

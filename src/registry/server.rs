@@ -4615,3 +4615,412 @@ mod cli_bundle_tests {
         assert!(cli.is_ok());
     }
 }
+
+#[cfg(test)]
+mod exec_and_mirror_cli_tests {
+    #[test]
+    fn test_cli_parses_exec() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "exec",
+            "owner/server",
+        ]);
+        assert!(cli.is_ok(), "exec should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_exec_with_dry_run() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "exec",
+            "owner/server",
+            "--dry-run",
+        ]);
+        assert!(cli.is_ok(), "exec --dry-run should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_exec_alias_run() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "run",
+            "owner/server",
+        ]);
+        assert!(cli.is_ok(), "run (alias for exec) should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_exec_with_extra_args() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "exec",
+            "owner/server",
+            "--",
+            "--port",
+            "3000",
+        ]);
+        assert!(cli.is_ok(), "exec with extra args should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_mirror() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "mirror",
+            "/tmp/output",
+        ]);
+        assert!(cli.is_ok(), "mirror should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_mirror_default_output() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "mirror",
+        ]);
+        assert!(cli.is_ok(), "mirror with default output should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_mirror_json() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "mirror",
+            "/tmp/out",
+            "--json",
+        ]);
+        assert!(cli.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod search_new_filters_cli_tests {
+    #[test]
+    fn test_cli_parses_search_min_stars() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "search",
+            "test",
+            "--min-stars",
+            "5",
+        ]);
+        assert!(cli.is_ok(), "search --min-stars should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_search_exclude_deprecated() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "search",
+            "test",
+            "--exclude-deprecated",
+        ]);
+        assert!(cli.is_ok(), "search --exclude-deprecated should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_search_combined_new_filters() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "search",
+            "database",
+            "--min-stars",
+            "10",
+            "--exclude-deprecated",
+            "--min-downloads",
+            "100",
+            "--sort",
+            "stars",
+        ]);
+        assert!(cli.is_ok(), "search with all new filters should parse: {:?}", cli.err());
+    }
+}
+
+#[cfg(test)]
+mod api_min_stars_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn app_with_stars() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        let entry1 = ServerEntry {
+            id: None,
+            owner: "test".into(),
+            name: "popular".into(),
+            version: "1.0.0".into(),
+            description: "Popular server".into(),
+            author: "test".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["tool1".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 1000,
+            stars: 50,
+            created_at: None,
+            updated_at: None,
+        };
+        let entry2 = ServerEntry {
+            id: None,
+            owner: "test".into(),
+            name: "niche".into(),
+            version: "1.0.0".into(),
+            description: "Niche server".into(),
+            author: "test".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["tool2".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 100,
+            stars: 2,
+            created_at: None,
+            updated_at: None,
+        };
+        let entry3 = ServerEntry {
+            id: None,
+            owner: "test".into(),
+            name: "zero-stars".into(),
+            version: "1.0.0".into(),
+            description: "No stars server".into(),
+            author: "test".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["tool3".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 50,
+            stars: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry1).unwrap();
+        db.upsert_server(&entry2).unwrap();
+        db.upsert_server(&entry3).unwrap();
+        db.set_stars("test", "popular", 50).unwrap();
+        db.set_stars("test", "niche", 2).unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_search_with_min_stars() {
+        let app = app_with_stars().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&min_stars=10")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(search.total, 1, "Only popular server has >= 10 stars");
+        assert_eq!(search.servers[0].name, "popular");
+    }
+
+    #[tokio::test]
+    async fn test_search_with_min_stars_zero() {
+        let app = app_with_stars().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&min_stars=0")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(search.total, 3, "min_stars=0 should return all");
+    }
+
+    #[tokio::test]
+    async fn test_search_with_min_stars_exact_match() {
+        let app = app_with_stars().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&min_stars=2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(search.total, 2, "popular (50) and niche (2) should match");
+    }
+
+    #[tokio::test]
+    async fn test_search_min_stars_too_high() {
+        let app = app_with_stars().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&min_stars=9999")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(search.total, 0);
+    }
+
+    #[tokio::test]
+    async fn test_search_min_stars_combined_with_min_downloads() {
+        let app = app_with_stars().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&min_stars=1&min_downloads=500")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(search.total, 1, "Only popular matches both filters");
+        assert_eq!(search.servers[0].name, "popular");
+    }
+
+    #[tokio::test]
+    async fn test_openapi_includes_min_stars() {
+        let app = app_with_stars().await;
+        let req = Request::builder()
+            .uri("/api/v1/openapi")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let search_params = result["paths"]["/api/v1/search"]["get"]["parameters"]
+            .as_array()
+            .unwrap();
+        let has_min_stars = search_params.iter().any(|p| p["name"] == "min_stars");
+        assert!(has_min_stars, "OpenAPI should document min_stars parameter");
+    }
+}
+
+#[cfg(test)]
+mod stars_in_search_sort_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn app_with_varied_stars() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        for (name, stars, downloads) in [
+            ("alpha", 100i64, 500i64),
+            ("beta", 5, 1000),
+            ("gamma", 50, 200),
+        ] {
+            db.upsert_server(&ServerEntry {
+                id: None,
+                owner: "test".into(),
+                name: name.into(),
+                version: "1.0.0".into(),
+                description: format!("{name} server"),
+                author: "test".into(),
+                license: "MIT".into(),
+                repository: String::new(),
+                command: "node".into(),
+                args: vec![],
+                transport: "stdio".into(),
+                tools: vec!["tool".into()],
+                resources: vec![],
+                prompts: vec![],
+                tags: vec![],
+                env: Default::default(),
+                homepage: String::new(),
+                deprecated: false,
+                deprecated_by: None,
+                downloads,
+                stars: 0,
+                created_at: None,
+                updated_at: None,
+            }).unwrap();
+            db.set_stars("test", name, stars).unwrap();
+        }
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_search_sort_by_stars_via_api() {
+        // The API sort by "stars" isn't in the route handler yet, but we can
+        // verify the stars field is returned correctly
+        let app = app_with_varied_stars().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let search: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(search.total, 3);
+
+        // Verify stars are returned
+        for server in &search.servers {
+            assert!(server.stars >= 0, "Stars should be non-negative");
+        }
+        // alpha has 100 stars
+        let alpha = search.servers.iter().find(|s| s.name == "alpha").unwrap();
+        assert_eq!(alpha.stars, 100);
+    }
+
+    #[tokio::test]
+    async fn test_leaderboard_reflects_stars() {
+        let app = app_with_varied_stars().await;
+        let req = Request::builder()
+            .uri("/api/v1/leaderboard?limit=3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let leaderboard = result["leaderboard"].as_array().unwrap();
+        assert_eq!(leaderboard.len(), 3);
+        // alpha has 100 stars * 10 + 500 downloads = 1500 (highest)
+        assert_eq!(leaderboard[0]["server"], "test/alpha");
+    }
+}

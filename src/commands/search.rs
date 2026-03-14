@@ -22,6 +22,8 @@ pub async fn run(
     owner_filter: Option<&str>,
     tag_filter: Option<&str>,
     license_filter: Option<&str>,
+    min_stars: Option<i64>,
+    exclude_deprecated: bool,
 ) -> Result<()> {
     // Regex mode always uses local DB
     let mut servers = if regex_mode {
@@ -120,6 +122,16 @@ pub async fn run(
     if let Some(license) = license_filter {
         let lic_lower = license.to_lowercase();
         servers.retain(|s| s.license.to_lowercase().contains(&lic_lower));
+    }
+
+    // Min stars filter
+    if let Some(min) = min_stars {
+        servers.retain(|s| s.stars >= min);
+    }
+
+    // Exclude deprecated filter
+    if exclude_deprecated {
+        servers.retain(|s| !s.deprecated);
     }
 
     // Client-side sorting
@@ -227,15 +239,25 @@ pub async fn run(
                 println!("    ⚠️  DEPRECATED — replaced by {replacement}");
             }
             if verbose {
+                let stars_str = if server.stars > 0 {
+                    format!(" | ★ {}", server.stars)
+                } else {
+                    String::new()
+                };
                 println!(
-                    "    ⬇ {} downloads | {} | {} | {} tools | {} tags",
-                    server.downloads, server.license, server.transport,
+                    "    ⬇ {} downloads{} | {} | {} | {} tools | {} tags",
+                    server.downloads, stars_str, server.license, server.transport,
                     server.tools.len(), server.tags.len(),
                 );
             } else {
+                let stars_str = if server.stars > 0 {
+                    format!(" | ★ {}", server.stars)
+                } else {
+                    String::new()
+                };
                 println!(
-                    "    ⬇ {} downloads | {} | {}",
-                    server.downloads, server.license, server.transport
+                    "    ⬇ {} downloads{} | {} | {}",
+                    server.downloads, stars_str, server.license, server.transport
                 );
             }
             println!();

@@ -473,6 +473,16 @@ impl Database {
     }
 
     /// Increment the star count for a server. Returns true if the server exists.
+    /// Set the star count for a server directly (useful for tests and imports).
+    #[allow(dead_code)]
+    pub fn set_stars(&self, owner: &str, name: &str, count: i64) -> Result<bool> {
+        let affected = self.conn.execute(
+            "UPDATE servers SET stars = ?3 WHERE owner = ?1 AND name = ?2",
+            params![owner, name, count],
+        )?;
+        Ok(affected > 0)
+    }
+
     pub fn star_server(&self, owner: &str, name: &str) -> Result<bool> {
         let affected = self.conn.execute(
             "UPDATE servers SET stars = stars + 1 WHERE owner = ?1 AND name = ?2",

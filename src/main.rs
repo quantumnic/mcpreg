@@ -85,6 +85,33 @@ enum Commands {
         /// Filter by license (e.g. "MIT", "Apache-2.0")
         #[arg(long)]
         license: Option<String>,
+        /// Only show servers with at least this many stars
+        #[arg(long)]
+        min_stars: Option<i64>,
+        /// Exclude deprecated servers from results
+        #[arg(long)]
+        exclude_deprecated: bool,
+    },
+    /// Run an MCP server directly from the registry
+    #[command(alias = "run")]
+    Exec {
+        /// Server reference (owner/name)
+        server: String,
+        /// Extra arguments to pass to the server command
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
+        /// Show what would be executed without actually running
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Mirror the local registry to a directory of JSON files
+    Mirror {
+        /// Output directory for the mirror
+        #[arg(default_value = "mcpreg-mirror")]
+        output: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Install an MCP server and add it to claude_desktop_config.json
     Install {
@@ -625,7 +652,11 @@ async fn main() {
             owner,
             tag,
             license,
-        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, regex, verbose, min_downloads, tool.as_deref(), transport.as_deref(), author.as_deref(), owner.as_deref(), tag.as_deref(), license.as_deref()).await,
+            min_stars,
+            exclude_deprecated,
+        } => commands::search::run(&query, json, category.as_deref(), &sort, limit, compact, offline, regex, verbose, min_downloads, tool.as_deref(), transport.as_deref(), author.as_deref(), owner.as_deref(), tag.as_deref(), license.as_deref(), min_stars, exclude_deprecated).await,
+        Commands::Exec { server, args, dry_run } => commands::exec::run(&server, &args, dry_run).await,
+        Commands::Mirror { output, json } => commands::mirror::run(&output, json),
         Commands::Install { server } => commands::install::run(&server).await,
         Commands::Uninstall { server } => commands::uninstall::run(&server),
         Commands::Publish { manifest } => commands::publish::run(manifest.as_deref()).await,

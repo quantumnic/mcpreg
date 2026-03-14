@@ -34,6 +34,8 @@ pub struct SearchQuery {
     pub exclude_deprecated: Option<bool>,
     /// Filter by license (e.g. "MIT", "Apache")
     pub license: Option<String>,
+    /// Only show servers with at least this many stars
+    pub min_stars: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -125,6 +127,11 @@ pub async fn search(
     if let Some(ref license) = params.license {
         let lic_lower = license.to_lowercase();
         servers.retain(|s| s.license.to_lowercase().contains(&lic_lower));
+    }
+
+    // Server-side min_stars filter
+    if let Some(min) = params.min_stars {
+        servers.retain(|s| s.stars >= min);
     }
 
     // Server-side sorting
@@ -1104,6 +1111,7 @@ pub async fn openapi() -> Json<serde_json::Value> {
                         {"name": "sort", "in": "query", "description": "Sort order: downloads, name, updated"},
                         {"name": "limit", "in": "query", "description": "Max results"},
                         {"name": "min_downloads", "in": "query", "description": "Minimum download count"},
+                        {"name": "min_stars", "in": "query", "description": "Minimum star count"},
                         {"name": "tool", "in": "query", "description": "Filter by tool name"},
                         {"name": "transport", "in": "query", "description": "Filter by transport type"},
                         {"name": "author", "in": "query", "description": "Filter by author"},

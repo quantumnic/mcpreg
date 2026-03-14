@@ -37,6 +37,9 @@ pub async fn run(server_ref: &str, json_output: bool) -> Result<()> {
     println!("Transport:   {}", entry.transport);
     println!("Command:     {} {}", entry.command, entry.args.join(" "));
     println!("Downloads:   {}", entry.downloads);
+    if entry.stars > 0 {
+        println!("Stars:       {}", entry.stars);
+    }
 
     if !entry.tools.is_empty() {
         println!("\nTools ({}):", entry.tools.len());
