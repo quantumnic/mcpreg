@@ -95,6 +95,11 @@ pub fn build_router(db_state: DbState) -> Router {
             axum::routing::get(routes::compare_servers),
         )
         .route("/api/v1/deprecated", axum::routing::get(routes::list_deprecated))
+        .route("/api/v1/popular-tools", axum::routing::get(routes::popular_tools))
+        .route(
+            "/api/v1/compatibility/:owner_a/:name_a/:owner_b/:name_b",
+            axum::routing::get(routes::compatibility),
+        )
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -3450,5 +3455,132 @@ mod deprecation_db_tests {
         assert_eq!(all.len(), 2);
         let dep_count = all.iter().filter(|s| s.deprecated).count();
         assert_eq!(dep_count, 1);
+    }
+}
+
+#[cfg(test)]
+mod popular_tools_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn setup_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let state: DbState = Arc::new(Mutex::new(db));
+        build_router(state)
+    }
+
+    #[tokio::test]
+    async fn test_api_popular_tools() {
+        let app = setup_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/popular-tools")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert!(body["total"].as_u64().unwrap() > 0);
+        assert!(body["tools"].as_array().unwrap().len() > 0);
+        // Each tool should have required fields
+        let first = &body["tools"][0];
+        assert!(first["tool"].is_string());
+        assert!(first["aggregate_downloads"].is_number());
+        assert!(first["server_count"].is_number());
+        assert!(first["rank"].as_u64().unwrap() == 1);
+    }
+
+    #[tokio::test]
+    async fn test_api_popular_tools_with_query() {
+        let app = setup_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/popular-tools?q=read")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        // All results should contain "read" in tool name
+        for tool_obj in body["tools"].as_array().unwrap() {
+            let tool_name = tool_obj["tool"].as_str().unwrap().to_lowercase();
+            assert!(tool_name.contains("read"), "Tool {tool_name} should contain 'read'");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_popular_tools_with_limit() {
+        let app = setup_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/popular-tools?limit=3")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert!(body["tools"].as_array().unwrap().len() <= 3);
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn setup_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let state: DbState = Arc::new(Mutex::new(db));
+        build_router(state)
+    }
+
+    #[tokio::test]
+    async fn test_api_compatibility_same_server() {
+        let app = setup_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/compatibility/modelcontextprotocol/filesystem/modelcontextprotocol/filesystem")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        // Same server should have tool conflicts with itself
+        assert!(body["score"].is_number());
+        assert!(body["details"]["transport_match"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_api_compatibility_different_servers() {
+        let app = setup_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/compatibility/modelcontextprotocol/filesystem/modelcontextprotocol/sqlite")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1_000_000).await.unwrap()).unwrap();
+        assert!(body["compatible"].is_boolean());
+        assert!(body["score"].is_number());
+        assert!(body["issues"].is_array());
+        assert!(body["notes"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_api_compatibility_not_found() {
+        let app = setup_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/compatibility/nobody/nothing/nobody/nothing2")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), 404);
     }
 }

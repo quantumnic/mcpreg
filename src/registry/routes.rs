@@ -1304,6 +1304,12 @@ pub struct RandomQuery {
     pub category: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct ToolIndexQuery {
+    pub q: Option<String>,
+    pub limit: Option<usize>,
+}
+
 /// GET /api/v1/servers/:owner/:name/config — return claude_desktop_config.json snippet
 pub async fn server_config_snippet(
     State(db): State<DbState>,
@@ -1636,5 +1642,157 @@ pub async fn list_deprecated(
     Ok(Json(serde_json::json!({
         "servers": deprecated,
         "total": total,
+    })))
+}
+
+/// Popular tools ranked by aggregate downloads of servers that use them (GET /api/v1/popular-tools)
+pub async fn popular_tools(
+    State(db): State<DbState>,
+    Query(params): Query<ToolIndexQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let all = db.list_all()?;
+
+    // Aggregate downloads per tool
+    let mut tool_scores: std::collections::HashMap<String, (i64, Vec<String>)> =
+        std::collections::HashMap::new();
+
+    for server in &all {
+        for tool in &server.tools {
+            let entry = tool_scores
+                .entry(tool.clone())
+                .or_insert_with(|| (0, Vec::new()));
+            entry.0 += server.downloads;
+            entry.1.push(server.full_name());
+        }
+    }
+
+    let mut ranked: Vec<(String, i64, Vec<String>)> = tool_scores
+        .into_iter()
+        .map(|(tool, (downloads, servers))| (tool, downloads, servers))
+        .collect();
+
+    // Filter by query if provided
+    if let Some(ref q) = params.q {
+        let q_lower = q.to_lowercase();
+        ranked.retain(|(tool, _, _)| tool.to_lowercase().contains(&q_lower));
+    }
+
+    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let limit = params.limit.unwrap_or(50).min(200);
+    ranked.truncate(limit);
+
+    let items: Vec<serde_json::Value> = ranked
+        .iter()
+        .enumerate()
+        .map(|(i, (tool, downloads, servers))| {
+            serde_json::json!({
+                "rank": i + 1,
+                "tool": tool,
+                "aggregate_downloads": downloads,
+                "server_count": servers.len(),
+                "servers": servers,
+            })
+        })
+        .collect();
+
+    let total = items.len();
+    Ok(Json(serde_json::json!({
+        "tools": items,
+        "total": total,
+    })))
+}
+
+/// Server compatibility check (GET /api/v1/compatibility/:owner_a/:name_a/:owner_b/:name_b)
+pub async fn compatibility(
+    State(db): State<DbState>,
+    Path((owner_a, name_a, owner_b, name_b)): Path<(String, String, String, String)>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let a = db
+        .get_server(&owner_a, &name_a)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner_a}/{name_a} not found")))?;
+    let b = db
+        .get_server(&owner_b, &name_b)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner_b}/{name_b} not found")))?;
+
+    // Check for tool name conflicts (same tool name)
+    let tools_a: std::collections::HashSet<&str> =
+        a.tools.iter().map(|t| t.as_str()).collect();
+    let tools_b: std::collections::HashSet<&str> =
+        b.tools.iter().map(|t| t.as_str()).collect();
+    let conflicting_tools: Vec<&str> = tools_a.intersection(&tools_b).copied().collect();
+
+    // Check env key overlaps
+    let env_a: std::collections::HashSet<&str> =
+        a.env.keys().map(|k| k.as_str()).collect();
+    let env_b: std::collections::HashSet<&str> =
+        b.env.keys().map(|k| k.as_str()).collect();
+    let shared_env: Vec<&str> = env_a.intersection(&env_b).copied().collect();
+
+    // Resource conflicts
+    let res_a: std::collections::HashSet<&str> =
+        a.resources.iter().map(|r| r.as_str()).collect();
+    let res_b: std::collections::HashSet<&str> =
+        b.resources.iter().map(|r| r.as_str()).collect();
+    let shared_resources: Vec<&str> = res_a.intersection(&res_b).copied().collect();
+
+    // Compute compatibility score (0-100)
+    let mut score = 100i32;
+    let mut issues: Vec<String> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+
+    if !conflicting_tools.is_empty() {
+        score -= (conflicting_tools.len() as i32 * 10).min(40);
+        issues.push(format!(
+            "{} conflicting tool name(s): {}",
+            conflicting_tools.len(),
+            conflicting_tools.join(", ")
+        ));
+    }
+
+    if !shared_env.is_empty() {
+        score -= (shared_env.len() as i32 * 5).min(20);
+        issues.push(format!(
+            "{} shared env variable(s): {} — may need different values",
+            shared_env.len(),
+            shared_env.join(", ")
+        ));
+    }
+
+    if a.transport != b.transport {
+        notes.push(format!(
+            "Different transports: {} vs {} — both supported by most clients",
+            a.transport, b.transport
+        ));
+    } else {
+        notes.push(format!("Same transport: {}", a.transport));
+    }
+
+    if !shared_resources.is_empty() {
+        notes.push(format!(
+            "Shared resource types: {} — may complement each other",
+            shared_resources.join(", ")
+        ));
+    }
+
+    let score = score.max(0);
+    let compatible = score >= 70;
+
+    Ok(Json(serde_json::json!({
+        "server_a": a.full_name(),
+        "server_b": b.full_name(),
+        "compatible": compatible,
+        "score": score,
+        "issues": issues,
+        "notes": notes,
+        "details": {
+            "conflicting_tools": conflicting_tools,
+            "shared_env_keys": shared_env,
+            "shared_resources": shared_resources,
+            "transport_match": a.transport == b.transport,
+            "combined_tool_count": tools_a.len() + tools_b.len() - conflicting_tools.len(),
+        }
     })))
 }

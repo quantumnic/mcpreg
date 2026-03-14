@@ -443,6 +443,40 @@ enum Commands {
         #[arg(short, long)]
         db: Option<String>,
     },
+    /// Manage your favorite/bookmarked servers
+    #[command(subcommand)]
+    Favorite(FavoriteCommands),
+    /// Explain why a server might be useful based on your installed servers
+    Why {
+        /// Server reference (owner/name)
+        server: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum FavoriteCommands {
+    /// Add a server to your favorites
+    Add {
+        /// Server reference (owner/name)
+        server: String,
+        /// Optional note/reason
+        #[arg(short, long)]
+        note: Option<String>,
+    },
+    /// Remove a server from favorites
+    Remove {
+        /// Server reference (owner/name)
+        server: String,
+    },
+    /// List all favorite servers
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -545,6 +579,14 @@ async fn main() {
             };
             registry::server::run_server(&bind, &db_path).await
         }
+        Commands::Favorite(sub) => match sub {
+            FavoriteCommands::Add { server, note } => {
+                commands::favorites::add(&server, note.as_deref())
+            }
+            FavoriteCommands::Remove { server } => commands::favorites::remove(&server),
+            FavoriteCommands::List { json } => commands::favorites::list(json),
+        },
+        Commands::Why { server, json } => commands::why::run(&server, json),
     };
 
     if let Err(e) = result {

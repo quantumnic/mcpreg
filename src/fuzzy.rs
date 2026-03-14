@@ -147,6 +147,10 @@ pub fn fuzzy_score(query: &str, candidate: &str, max_distance: usize) -> Option<
     if is_subsequence(&q, &c) {
         return Some(3);
     }
+    // Acronym match (e.g., "fs" matches "file_system")
+    if acronym_match(&q, &c) {
+        return Some(3);
+    }
 
     let dist = levenshtein(&q, &c);
     if dist <= max_distance {
@@ -437,5 +441,143 @@ mod tests {
         // "postgresql" vs "postgresql-server" - name part has good JW similarity
         let suggestions = suggest("postgresql", &candidates, 2);
         assert!(!suggestions.is_empty(), "JW fallback should find postgresql-server");
+    }
+}
+
+/// Compute normalized Levenshtein similarity (0.0 to 1.0, 1.0 = identical).
+#[allow(dead_code)]
+pub fn normalized_levenshtein(a: &str, b: &str) -> f64 {
+    let max_len = a.len().max(b.len());
+    if max_len == 0 {
+        return 1.0;
+    }
+    let dist = levenshtein(a, b) as f64;
+    1.0 - dist / max_len as f64
+}
+
+/// Check if the query matches using acronym style.
+/// E.g., "fs" matches "file_system", "mcp" matches "model_context_protocol".
+pub fn acronym_match(query: &str, candidate: &str) -> bool {
+    let query = query.to_lowercase();
+    let candidate = candidate.to_lowercase();
+
+    // Extract first letters of words (split on _, -, space)
+    let acronym: String = candidate
+        .split(['_', '-', ' ', '/'])
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.chars().next())
+        .collect();
+
+    acronym.contains(&query)
+}
+
+#[cfg(test)]
+mod extended_tests {
+    use super::*;
+
+    #[test]
+    fn test_normalized_levenshtein_identical() {
+        let nl = normalized_levenshtein("hello", "hello");
+        assert!((nl - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_normalized_levenshtein_empty() {
+        let nl = normalized_levenshtein("", "");
+        assert!((nl - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_normalized_levenshtein_one_empty() {
+        let nl = normalized_levenshtein("abc", "");
+        assert!((nl - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_normalized_levenshtein_one_edit() {
+        let nl = normalized_levenshtein("cat", "bat");
+        // distance 1, max_len 3 → 1 - 1/3 ≈ 0.666
+        assert!((nl - 2.0 / 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_normalized_levenshtein_range() {
+        let nl = normalized_levenshtein("hello", "world");
+        assert!(nl >= 0.0 && nl <= 1.0, "Should be in [0, 1]: {nl}");
+    }
+
+    #[test]
+    fn test_acronym_match_basic() {
+        assert!(acronym_match("fs", "file_system"));
+        assert!(acronym_match("mcp", "model_context_protocol"));
+        assert!(acronym_match("ws", "web-search"));
+    }
+
+    #[test]
+    fn test_acronym_match_slash() {
+        assert!(acronym_match("mf", "modelcontextprotocol/filesystem"));
+    }
+
+    #[test]
+    fn test_acronym_match_no_match() {
+        assert!(!acronym_match("xyz", "file_system"));
+    }
+
+    #[test]
+    fn test_acronym_match_case_insensitive() {
+        assert!(acronym_match("FS", "File_System"));
+    }
+
+    #[test]
+    fn test_acronym_match_single_word() {
+        assert!(acronym_match("s", "sqlite"));
+    }
+
+    #[test]
+    fn test_levenshtein_unicode() {
+        // Unicode chars
+        assert_eq!(levenshtein("café", "cafe"), 1);
+        assert_eq!(levenshtein("über", "uber"), 1);
+    }
+
+    #[test]
+    fn test_jaro_winkler_no_prefix() {
+        // Strings that share no prefix
+        let jw = jaro_winkler("abc", "xyz");
+        let jaro = jaro_similarity("abc", "xyz");
+        assert_eq!(jw, jaro, "No common prefix → JW == Jaro");
+    }
+
+    #[test]
+    fn test_fuzzy_score_case_insensitive() {
+        assert_eq!(fuzzy_score("FILE", "filesystem", 3), Some(1));
+        assert_eq!(fuzzy_score("FileSystem", "filesystem", 3), Some(0));
+    }
+
+    #[test]
+    fn test_suggest_prefers_shorter_match() {
+        let candidates = vec![
+            "org/sql".into(),
+            "org/sqlite-advanced-tooling".into(),
+        ];
+        let suggestions = suggest("sql", &candidates, 3);
+        assert!(!suggestions.is_empty());
+        // "org/sql" should rank first (exact name match)
+        assert_eq!(suggestions[0].0, "org/sql");
+    }
+
+    #[test]
+    fn test_is_subsequence_empty_needle() {
+        assert!(is_subsequence("", "anything"));
+    }
+
+    #[test]
+    fn test_is_subsequence_equal() {
+        assert!(is_subsequence("abc", "abc"));
+    }
+
+    #[test]
+    fn test_is_subsequence_longer_needle() {
+        assert!(!is_subsequence("abcdef", "abc"));
     }
 }

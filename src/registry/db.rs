@@ -248,11 +248,40 @@ impl Database {
     /// Multi-word search: splits query on whitespace, all terms must match (AND semantics).
     /// Weighted ranking: name > owner > tools > description, plus download bonus.
     pub fn search(&self, query: &str) -> Result<Vec<ServerEntry>> {
-        let terms: Vec<&str> = query.split_whitespace().collect();
+        let all_terms: Vec<&str> = query.split_whitespace().collect();
 
-        if terms.is_empty() {
+        if all_terms.is_empty() {
             // Empty query: return all, ordered by downloads
             return self.list_servers(1, 50).map(|(v, _)| v);
+        }
+
+        // Separate positive and negative terms (prefixed with '-')
+        let mut terms: Vec<&str> = Vec::new();
+        let mut negated: Vec<&str> = Vec::new();
+        for term in &all_terms {
+            if let Some(neg) = term.strip_prefix('-') {
+                if !neg.is_empty() {
+                    negated.push(neg);
+                }
+            } else {
+                terms.push(term);
+            }
+        }
+
+        // If only negated terms, start with all servers
+        if terms.is_empty() && !negated.is_empty() {
+            let mut servers = self.list_servers(1, 200).map(|(v, _)| v)?;
+            for neg in &negated {
+                let neg_lower = neg.to_lowercase();
+                servers.retain(|s| {
+                    !s.name.to_lowercase().contains(&neg_lower)
+                        && !s.description.to_lowercase().contains(&neg_lower)
+                        && !s.owner.to_lowercase().contains(&neg_lower)
+                        && !s.tools.iter().any(|t| t.to_lowercase().contains(&neg_lower))
+                        && !s.tags.iter().any(|t| t.to_lowercase().contains(&neg_lower))
+                });
+            }
+            return Ok(servers);
         }
 
         // Build dynamic WHERE: every term must match at least one column
@@ -266,6 +295,18 @@ impl Database {
             param_values.push(pattern);
             conditions.push(format!(
                 "(name LIKE ?{p} ESCAPE '\\' OR description LIKE ?{p} ESCAPE '\\' OR owner LIKE ?{p} ESCAPE '\\' OR tools LIKE ?{p} ESCAPE '\\' OR author LIKE ?{p} ESCAPE '\\' OR category LIKE ?{p} ESCAPE '\\' OR tags LIKE ?{p} ESCAPE '\\')",
+                p = idx + 1
+            ));
+        }
+
+        // Add negation conditions
+        for neg in &negated {
+            let escaped = escape_like(neg);
+            let pattern = format!("%{escaped}%");
+            let idx = param_values.len();
+            param_values.push(pattern);
+            conditions.push(format!(
+                "NOT (name LIKE ?{p} ESCAPE '\\' OR description LIKE ?{p} ESCAPE '\\' OR tools LIKE ?{p} ESCAPE '\\' OR tags LIKE ?{p} ESCAPE '\\')",
                 p = idx + 1
             ));
         }
@@ -2533,5 +2574,106 @@ mod fuzzy_edge_case_tests {
     fn test_fuzzy_special_chars() {
         let _score = fuzzy::fuzzy_score("file://", "file://path", 5);
         // Just ensure it doesn't panic
+    }
+}
+
+#[cfg(test)]
+mod negation_search_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+
+    fn create_test_db() -> Database {
+        let db = Database::open_in_memory().unwrap();
+
+        let servers = vec![
+            ("alice", "filesystem", "File system access", "file,storage", "read_file,write_file"),
+            ("bob", "sqlite", "SQLite database access", "database", "query,execute"),
+            ("carol", "web-search", "Web search via API", "search,web", "search,fetch"),
+            ("dave", "browser", "Browser automation", "browser,web", "navigate,click,screenshot"),
+            ("eve", "postgres", "PostgreSQL database", "database", "pg_query,pg_execute"),
+        ];
+
+        for (owner, name, desc, tags, tools) in servers {
+            let entry = ServerEntry {
+                id: None,
+                owner: owner.into(),
+                name: name.into(),
+                version: "1.0.0".into(),
+                description: desc.into(),
+                author: owner.into(),
+                license: "MIT".into(),
+                repository: String::new(),
+                command: "node".into(),
+                args: vec![],
+                transport: "stdio".into(),
+                tools: tools.split(',').map(String::from).collect(),
+                resources: vec![],
+                prompts: vec![],
+                tags: tags.split(',').map(String::from).collect(),
+                env: Default::default(),
+                homepage: String::new(),
+                deprecated: false,
+                deprecated_by: None,
+                downloads: 100,
+                created_at: None,
+                updated_at: None,
+            };
+            db.upsert_server(&entry).unwrap();
+        }
+
+        db
+    }
+
+    #[test]
+    fn test_search_negation_excludes_term() {
+        let db = create_test_db();
+        let results = db.search("database -postgres").unwrap();
+        // Should find sqlite but not postgres
+        assert!(results.iter().any(|s| s.name == "sqlite"));
+        assert!(!results.iter().any(|s| s.name == "postgres"));
+    }
+
+    #[test]
+    fn test_search_negation_only() {
+        let db = create_test_db();
+        let results = db.search("-database").unwrap();
+        // Should exclude all database servers
+        assert!(!results.iter().any(|s| s.name == "sqlite"));
+        assert!(!results.iter().any(|s| s.name == "postgres"));
+        // But include others
+        assert!(results.iter().any(|s| s.name == "filesystem"));
+    }
+
+    #[test]
+    fn test_search_multiple_negations() {
+        let db = create_test_db();
+        let results = db.search("-database -web").unwrap();
+        // Should exclude database and web servers
+        assert!(!results.iter().any(|s| s.name == "sqlite"));
+        assert!(!results.iter().any(|s| s.name == "web-search"));
+        assert!(!results.iter().any(|s| s.name == "browser"));
+        assert!(results.iter().any(|s| s.name == "filesystem"));
+    }
+
+    #[test]
+    fn test_search_negation_no_effect_when_not_matching() {
+        let db = create_test_db();
+        let results = db.search("filesystem -nonexistent").unwrap();
+        assert!(results.iter().any(|s| s.name == "filesystem"));
+    }
+
+    #[test]
+    fn test_search_without_negation_unchanged() {
+        let db = create_test_db();
+        let results = db.search("sqlite").unwrap();
+        assert!(results.iter().any(|s| s.name == "sqlite"));
+    }
+
+    #[test]
+    fn test_search_empty_negation_ignored() {
+        let db = create_test_db();
+        // Bare "-" should be ignored
+        let results = db.search("sqlite -").unwrap();
+        assert!(results.iter().any(|s| s.name == "sqlite"));
     }
 }
