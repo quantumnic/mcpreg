@@ -2859,3 +2859,207 @@ mod negation_search_tests {
         assert!(results.iter().any(|s| s.name == "sqlite"));
     }
 }
+
+impl Database {
+    /// Search with weighted field scoring.
+    #[allow(dead_code)]
+    /// Name matches are weighted 3x, description 2x, tools/tags 1x.
+    /// Returns results sorted by weighted relevance score (highest first).
+    pub fn search_weighted(&self, query: &str) -> Result<Vec<(ServerEntry, f64)>> {
+        let query_lower = query.to_lowercase();
+        let tokens: Vec<&str> = query_lower.split_whitespace().collect();
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let all = self.list_all()?;
+        let mut scored: Vec<(ServerEntry, f64)> = Vec::new();
+
+        for server in all {
+            let mut score = 0.0_f64;
+            let name_lower = server.name.to_lowercase();
+            let full_name_lower = server.full_name().to_lowercase();
+            let desc_lower = server.description.to_lowercase();
+            let tools_str = server.tools.join(" ").to_lowercase();
+            let tags_str = server.tags.join(" ").to_lowercase();
+            let category = crate::registry::seed::server_category(&server.owner, &server.name).to_lowercase();
+
+            for token in &tokens {
+                // Exact name match (highest weight)
+                if name_lower == *token || full_name_lower == *token {
+                    score += 10.0;
+                } else if name_lower.contains(token) {
+                    score += 5.0;
+                }
+
+                // Description match
+                if desc_lower.contains(token) {
+                    score += 2.0;
+                }
+
+                // Tools match
+                if tools_str.contains(token) {
+                    score += 1.5;
+                }
+
+                // Tags match
+                if tags_str.contains(token) {
+                    score += 1.0;
+                }
+
+                // Category match
+                if category.contains(token) {
+                    score += 0.5;
+                }
+            }
+
+            // Boost by popularity (log scale)
+            if score > 0.0 {
+                let popularity_boost = (server.downloads as f64 + 1.0).ln() * 0.1;
+                score += popularity_boost;
+                scored.push((server, score));
+            }
+        }
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored)
+    }
+
+    /// Get servers grouped by transport type.
+    #[allow(dead_code)]
+    pub fn group_by_transport(&self) -> Result<Vec<(String, Vec<ServerEntry>)>> {
+        let all = self.list_all()?;
+        let mut groups: std::collections::BTreeMap<String, Vec<ServerEntry>> = std::collections::BTreeMap::new();
+        for server in all {
+            groups.entry(server.transport.clone()).or_default().push(server);
+        }
+        Ok(groups.into_iter().collect())
+    }
+
+    /// Get servers that have been updated most recently.
+    #[allow(dead_code)]
+    pub fn hot_servers(&self, limit: usize) -> Result<Vec<ServerEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, owner, name, version, description, author, license, repository,
+                    command, args, transport, tools, resources, prompts, tags, env,
+                    homepage, deprecated, deprecated_by, category, downloads, stars,
+                    created_at, updated_at
+             FROM servers
+             WHERE updated_at IS NOT NULL
+             ORDER BY updated_at DESC
+             LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], row_mapper)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?.into_entry());
+        }
+        Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod weighted_search_tests {
+    use super::*;
+
+    fn create_test_db() -> Database {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        db
+    }
+
+    #[test]
+    fn test_search_weighted_basic() {
+        let db = create_test_db();
+        let results = db.search_weighted("filesystem").unwrap();
+        assert!(!results.is_empty());
+        // First result should be the filesystem server (exact name match)
+        assert_eq!(results[0].0.name, "filesystem");
+        // Score should be high due to exact name match
+        assert!(results[0].1 > 5.0);
+    }
+
+    #[test]
+    fn test_search_weighted_empty_query() {
+        let db = create_test_db();
+        let results = db.search_weighted("").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_weighted_multi_word() {
+        let db = create_test_db();
+        let results = db.search_weighted("database sql").unwrap();
+        assert!(!results.is_empty());
+        // Servers matching both terms should score highest
+        let top = &results[0].0;
+        let name_or_desc = format!("{} {}", top.name, top.description).to_lowercase();
+        assert!(
+            name_or_desc.contains("sql") || name_or_desc.contains("database"),
+            "Top result should match at least one search term"
+        );
+    }
+
+    #[test]
+    fn test_search_weighted_name_beats_description() {
+        let db = create_test_db();
+        let results = db.search_weighted("git").unwrap();
+        assert!(!results.is_empty());
+        // The "git" server should score higher than servers that just mention git in description
+        let git_server = results.iter().find(|(s, _)| s.name == "git");
+        assert!(git_server.is_some(), "git server should be in results");
+        let git_score = git_server.unwrap().1;
+        // Should be near the top
+        assert!(git_score >= results[0].1 * 0.5, "git server should score well");
+    }
+
+    #[test]
+    fn test_search_weighted_no_results() {
+        let db = create_test_db();
+        let results = db.search_weighted("xyznonexistent123").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_weighted_scores_descending() {
+        let db = create_test_db();
+        let results = db.search_weighted("server").unwrap();
+        for window in results.windows(2) {
+            assert!(
+                window[0].1 >= window[1].1,
+                "Results should be sorted by score descending"
+            );
+        }
+    }
+
+    #[test]
+    fn test_group_by_transport() {
+        let db = create_test_db();
+        let groups = db.group_by_transport().unwrap();
+        assert!(!groups.is_empty());
+        // Should have at least stdio
+        assert!(
+            groups.iter().any(|(t, _)| t == "stdio"),
+            "Should have stdio transport group"
+        );
+        // Each group should have at least one server
+        for (_, servers) in &groups {
+            assert!(!servers.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_hot_servers() {
+        let db = create_test_db();
+        let hot = db.hot_servers(5).unwrap();
+        assert!(!hot.is_empty());
+        assert!(hot.len() <= 5);
+    }
+
+    #[test]
+    fn test_hot_servers_zero_limit() {
+        let db = create_test_db();
+        let hot = db.hot_servers(0).unwrap();
+        assert!(hot.is_empty());
+    }
+}

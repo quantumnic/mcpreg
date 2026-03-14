@@ -360,6 +360,34 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Create a portable bundle of MCP servers for sharing
+    BundleCreate {
+        /// Bundle name
+        name: String,
+        /// Server references (owner/name) to include
+        #[arg(required = true)]
+        servers: Vec<String>,
+        /// Bundle description
+        #[arg(short, long)]
+        description: Option<String>,
+        /// Bundle author
+        #[arg(short, long)]
+        author: Option<String>,
+        /// Output file path (prints to stdout if not given)
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect a bundle file (show contents without installing)
+    BundleInspect {
+        /// Path to bundle JSON file
+        file: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Backup installed servers and config to a JSON file
     Backup {
         /// Output file path (prints to stdout if not given)
@@ -655,6 +683,24 @@ async fn main() {
         Commands::Unpin { server } => commands::pin::run_unpin(&server),
         Commands::Pinned => commands::pin::run_list(),
         Commands::Recommend { limit, json } => commands::recommend::run(limit, json),
+        Commands::BundleCreate {
+            name,
+            servers,
+            description,
+            author,
+            output,
+            json,
+        } => commands::bundle::run_create(
+            &name,
+            &servers,
+            description.as_deref(),
+            author.as_deref(),
+            output.as_deref(),
+            json,
+        ),
+        Commands::BundleInspect { file, json } => {
+            commands::bundle::run_inspect(&file, json)
+        }
         Commands::Backup { output } => commands::backup::run_backup(output.as_deref()),
         Commands::Restore { file, dry_run } => commands::backup::run_restore(&file, dry_run),
         Commands::Health { json } => commands::health::run(json).await,

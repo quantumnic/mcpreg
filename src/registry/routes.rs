@@ -2111,3 +2111,162 @@ pub async fn leaderboard(
         "total": entries.len(),
     })))
 }
+
+/// Matrix endpoint — cross-reference of categories × transports.
+/// Shows how many servers exist for each category/transport combination.
+pub async fn matrix(
+    State(db): State<DbState>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let all = db.list_all()?;
+
+    let mut categories = std::collections::BTreeSet::new();
+    let mut transports = std::collections::BTreeSet::new();
+    let mut counts: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+
+    for server in &all {
+        let cat = crate::registry::seed::server_category(&server.owner, &server.name).to_string();
+        let transport = server.transport.clone();
+        categories.insert(cat.clone());
+        transports.insert(transport.clone());
+        *counts.entry((cat, transport)).or_insert(0) += 1;
+    }
+
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for cat in &categories {
+        let mut row = serde_json::Map::new();
+        row.insert("category".into(), serde_json::Value::String(cat.to_string()));
+        let mut total = 0usize;
+        for transport in &transports {
+            let count = counts.get(&(cat.to_string(), transport.clone())).copied().unwrap_or(0);
+            total += count;
+            row.insert(transport.clone(), serde_json::Value::Number(count.into()));
+        }
+        row.insert("total".into(), serde_json::Value::Number(total.into()));
+        rows.push(serde_json::Value::Object(row));
+    }
+
+    Ok(Json(serde_json::json!({
+        "matrix": rows,
+        "categories": categories.iter().collect::<Vec<_>>(),
+        "transports": transports.iter().collect::<Vec<_>>(),
+        "total_servers": all.len(),
+    })))
+}
+
+/// Badge endpoint — returns an SVG badge for a server (for use in READMEs).
+/// Query params: ?style=flat (default) or ?style=plastic
+pub async fn server_badge(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+    Query(params): Query<BadgeQuery>,
+) -> Result<axum::response::Response, McpRegError> {
+    use axum::response::IntoResponse;
+    let db = db.lock().await;
+    let server = db.get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+    let downloads = server.downloads;
+    let version = &server.version;
+    let label = format!("{owner}/{name}");
+    let value = format!("v{version} | ⬇ {downloads}");
+    let style = params.style.as_deref().unwrap_or("flat");
+
+    let (bg_label, bg_value) = match style {
+        "plastic" => ("#555", "#007ec6"),
+        _ => ("#555", "#4c1"),
+    };
+
+    let label_width = label.len() * 7 + 10;
+    let value_width = value.len() * 7 + 10;
+    let total_width = label_width + value_width;
+
+    let label_x = label_width / 2;
+    let value_x = label_width + value_width / 2;
+    let fill_color = "#fff";
+    let font = "Verdana,sans-serif";
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{total_width}\" height=\"20\">\
+         <rect width=\"{label_width}\" height=\"20\" fill=\"{bg_label}\"/>\
+         <rect x=\"{label_width}\" width=\"{value_width}\" height=\"20\" fill=\"{bg_value}\"/>\
+         <text x=\"{label_x}\" y=\"14\" fill=\"{fill_color}\" font-family=\"{font}\" font-size=\"11\" text-anchor=\"middle\">{label}</text>\
+         <text x=\"{value_x}\" y=\"14\" fill=\"{fill_color}\" font-family=\"{font}\" font-size=\"11\" text-anchor=\"middle\">{value}</text>\
+         </svg>"
+    );
+
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "image/svg+xml"),
+         (axum::http::header::CACHE_CONTROL, "max-age=300, public")],
+        svg,
+    ).into_response())
+}
+
+#[derive(serde::Deserialize)]
+pub struct BadgeQuery {
+    pub style: Option<String>,
+}
+
+/// Bulk search endpoint — search with multiple queries at once.
+/// POST /api/v1/search/bulk with { "queries": ["database", "ai", "web"] }
+pub async fn bulk_search(
+    State(db): State<DbState>,
+    Json(body): Json<BulkSearchBody>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let mut results = serde_json::Map::new();
+
+    for query in &body.queries {
+        let servers = db.search(query)?;
+        let entries: Vec<serde_json::Value> = servers
+            .iter()
+            .take(body.limit.unwrap_or(10))
+            .map(|s| {
+                serde_json::json!({
+                    "server": s.full_name(),
+                    "version": s.version,
+                    "description": s.description,
+                    "downloads": s.downloads,
+                    "transport": s.transport,
+                })
+            })
+            .collect();
+        results.insert(query.clone(), serde_json::Value::Array(entries));
+    }
+
+    Ok(Json(serde_json::json!({
+        "results": results,
+        "queries": body.queries.len(),
+    })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct BulkSearchBody {
+    pub queries: Vec<String>,
+    pub limit: Option<usize>,
+}
+
+/// Recently published versions across all servers.
+pub async fn recent_activity(
+    State(db): State<DbState>,
+    Query(params): Query<LimitQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let limit = params.limit.unwrap_or(20).min(100);
+    let db = db.lock().await;
+    let versions = db.recent_versions(limit)?;
+    let entries: Vec<serde_json::Value> = versions
+        .iter()
+        .map(|(owner_name, version, _, published_at)| {
+            serde_json::json!({
+                "server": owner_name,
+                "version": version,
+                "published_at": published_at,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "activity": entries,
+        "total": entries.len(),
+    })))
+}
+
+

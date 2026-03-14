@@ -117,6 +117,13 @@ pub fn build_router(db_state: DbState) -> Router {
             axum::routing::post(routes::unstar_server),
         )
         .route("/api/v1/leaderboard", axum::routing::get(routes::leaderboard))
+        .route("/api/v1/matrix", axum::routing::get(routes::matrix))
+        .route(
+            "/api/v1/servers/:owner/:name/badge",
+            axum::routing::get(routes::server_badge),
+        )
+        .route("/api/v1/search/bulk", axum::routing::post(routes::bulk_search))
+        .route("/api/v1/activity", axum::routing::get(routes::recent_activity))
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -4344,5 +4351,267 @@ mod db_star_tests {
         let entries = db.leaderboard(10).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].owner, "lb");
+    }
+}
+
+#[cfg(test)]
+mod matrix_badge_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let state: DbState = Arc::new(Mutex::new(db));
+        build_router(state)
+    }
+
+    #[tokio::test]
+    async fn test_api_matrix() {
+        let app = seeded_app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/matrix")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert!(result["matrix"].is_array());
+        assert!(result["categories"].is_array());
+        assert!(result["transports"].is_array());
+        assert!(result["total_servers"].is_number());
+
+        let matrix = result["matrix"].as_array().unwrap();
+        assert!(!matrix.is_empty(), "Matrix should have rows");
+
+        // Each row should have a category and a total
+        for row in matrix {
+            assert!(row["category"].is_string());
+            assert!(row["total"].is_number());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_matrix_totals_consistent() {
+        let app = seeded_app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/matrix")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let total_servers = result["total_servers"].as_u64().unwrap();
+        let matrix = result["matrix"].as_array().unwrap();
+        let row_totals: u64 = matrix
+            .iter()
+            .map(|r| r["total"].as_u64().unwrap_or(0))
+            .sum();
+        assert_eq!(
+            total_servers, row_totals,
+            "Sum of row totals should equal total_servers"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_api_badge_existing_server() {
+        let app = seeded_app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/servers/modelcontextprotocol/filesystem/badge")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(content_type, "image/svg+xml");
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let svg = std::str::from_utf8(&body).unwrap();
+        assert!(svg.contains("<svg"), "Should be SVG");
+        assert!(svg.contains("filesystem"), "Should contain server name");
+    }
+
+    #[tokio::test]
+    async fn test_api_badge_not_found() {
+        let app = seeded_app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/servers/nobody/nothing/badge")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_badge_plastic_style() {
+        let app = seeded_app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/servers/modelcontextprotocol/filesystem/badge?style=plastic")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let svg = std::str::from_utf8(&body).unwrap();
+        assert!(svg.contains("#007ec6"), "Plastic style should use blue color");
+    }
+
+    #[tokio::test]
+    async fn test_api_bulk_search() {
+        let app = seeded_app().await;
+        let body = serde_json::json!({
+            "queries": ["database", "web"],
+            "limit": 3,
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/search/bulk")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(result["queries"], 2);
+        assert!(result["results"]["database"].is_array());
+        assert!(result["results"]["web"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_api_recent_activity() {
+        let app = seeded_app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/activity?limit=5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["activity"].is_array());
+        assert!(result["total"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_api_badge_has_cache_header() {
+        let app = seeded_app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/servers/modelcontextprotocol/filesystem/badge")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(cache_control.contains("max-age"), "Should have cache-control header");
+    }
+}
+
+#[cfg(test)]
+mod cli_bundle_tests {
+    #[test]
+    fn test_cli_parses_bundle_create() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "bundle-create",
+            "my-bundle",
+            "org/tool1",
+            "org/tool2",
+            "--description",
+            "A test bundle",
+        ]);
+        assert!(cli.is_ok(), "bundle-create should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_bundle_inspect() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "bundle-inspect",
+            "bundle.json",
+        ]);
+        assert!(cli.is_ok(), "bundle-inspect should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_bundle_inspect_json() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg",
+            "bundle-inspect",
+            "bundle.json",
+            "--json",
+        ]);
+        assert!(cli.is_ok());
     }
 }
