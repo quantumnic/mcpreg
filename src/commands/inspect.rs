@@ -426,6 +426,7 @@ mod tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 1000,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -458,6 +459,7 @@ mod tests {
             deprecated: true,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };

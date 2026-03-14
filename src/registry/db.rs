@@ -47,6 +47,7 @@ impl Database {
                 deprecated_by TEXT NOT NULL DEFAULT '',
                 category TEXT NOT NULL DEFAULT '',
                 downloads INTEGER NOT NULL DEFAULT 0,
+                stars INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(owner, name)
@@ -147,6 +148,17 @@ impl Database {
         if !has_deprecated {
             self.conn.execute_batch("ALTER TABLE servers ADD COLUMN deprecated INTEGER NOT NULL DEFAULT 0")?;
             self.conn.execute_batch("ALTER TABLE servers ADD COLUMN deprecated_by TEXT NOT NULL DEFAULT ''")?;
+        }
+
+        // Add stars column if missing
+        let has_stars: bool = self.conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('servers') WHERE name='stars'")?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !has_stars {
+            self.conn.execute_batch("ALTER TABLE servers ADD COLUMN stars INTEGER NOT NULL DEFAULT 0")?;
         }
 
         // Create server_versions table if missing (for databases created before this version)
@@ -340,7 +352,7 @@ impl Database {
 
         let sql = format!(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at,
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at,
                     ({score_expr} + downloads / 100) AS relevance
              FROM servers
              WHERE {where_clause}
@@ -370,7 +382,7 @@ impl Database {
         let pattern = format!("%{escaped}%");
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at
              FROM servers WHERE category LIKE ?1 ORDER BY downloads DESC",
         )?;
         let rows = stmt.query_map(params![pattern], row_mapper)?;
@@ -384,7 +396,7 @@ impl Database {
     pub fn get_server(&self, owner: &str, name: &str) -> Result<Option<ServerEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at
              FROM servers WHERE owner = ?1 AND name = ?2",
         )?;
         let mut rows = stmt.query_map(params![owner, name], row_mapper)?;
@@ -411,7 +423,7 @@ impl Database {
 
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at
              FROM servers ORDER BY downloads DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(params![per_page as i64, offset as i64], row_mapper)?;
@@ -427,7 +439,7 @@ impl Database {
     pub fn list_all(&self) -> Result<Vec<ServerEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at
              FROM servers ORDER BY downloads DESC",
         )?;
         let rows = stmt.query_map([], row_mapper)?;
@@ -458,6 +470,41 @@ impl Database {
             params![owner, name],
         )?;
         Ok(affected > 0)
+    }
+
+    /// Increment the star count for a server. Returns true if the server exists.
+    pub fn star_server(&self, owner: &str, name: &str) -> Result<bool> {
+        let affected = self.conn.execute(
+            "UPDATE servers SET stars = stars + 1 WHERE owner = ?1 AND name = ?2",
+            params![owner, name],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// Decrement the star count for a server (minimum 0). Returns true if the server exists.
+    pub fn unstar_server(&self, owner: &str, name: &str) -> Result<bool> {
+        let affected = self.conn.execute(
+            "UPDATE servers SET stars = MAX(0, stars - 1) WHERE owner = ?1 AND name = ?2",
+            params![owner, name],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// Get the leaderboard: top servers by a combined score of downloads + stars.
+    pub fn leaderboard(&self, limit: usize) -> Result<Vec<ServerEntry>> {
+        let sql = "SELECT id, owner, name, version, description, author, license, repository,
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at
+             FROM servers
+             WHERE deprecated = 0
+             ORDER BY (downloads + stars * 10) DESC
+             LIMIT ?1";
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params![limit as i64], row_mapper)?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?.into_entry());
+        }
+        Ok(entries)
     }
 
     /// Count servers matching a transport type.
@@ -574,8 +621,9 @@ fn row_mapper(row: &rusqlite::Row) -> rusqlite::Result<ServerEntryRow> {
         deprecated_by: row.get(18)?,
         category: row.get(19)?,
         downloads: row.get(20)?,
-        created_at: row.get(21)?,
-        updated_at: row.get(22)?,
+        stars: row.get::<_, i64>(21).unwrap_or(0),
+        created_at: row.get(22)?,
+        updated_at: row.get(23)?,
     })
 }
 
@@ -602,6 +650,7 @@ struct ServerEntryRow {
     #[allow(dead_code)]
     category: String,
     downloads: i64,
+    stars: i64,
     created_at: String,
     updated_at: String,
 }
@@ -629,6 +678,7 @@ impl ServerEntryRow {
             deprecated: self.deprecated != 0,
             deprecated_by: if self.deprecated_by.is_empty() { None } else { Some(self.deprecated_by) },
             downloads: self.downloads,
+            stars: self.stars,
             created_at: Some(self.created_at),
             updated_at: Some(self.updated_at),
         }
@@ -661,6 +711,7 @@ mod tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -904,7 +955,7 @@ impl Database {
         let pattern = format!("%{escaped}%");
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at
              FROM servers WHERE LOWER(tags) LIKE LOWER(?1) ESCAPE '\\' ORDER BY downloads DESC",
         )?;
         let rows = stmt.query_map(params![pattern], row_mapper)?;
@@ -1239,6 +1290,7 @@ mod search_tests {
             deprecated: false,
             deprecated_by: None,
             downloads,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -1448,6 +1500,7 @@ mod tools_index_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -1515,6 +1568,7 @@ mod prompts_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -1547,6 +1601,7 @@ mod prompts_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -1579,6 +1634,7 @@ mod prompts_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -1622,6 +1678,7 @@ mod tags_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -1706,6 +1763,7 @@ mod suggest_tests {
             deprecated: false,
             deprecated_by: None,
             downloads,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -1798,6 +1856,7 @@ mod improved_search_tests {
             deprecated: false,
             deprecated_by: None,
             downloads,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -1886,6 +1945,7 @@ mod tag_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -1991,14 +2051,14 @@ impl Database {
             let pattern = format!("%{escaped}%");
             (
                 "SELECT id, owner, name, version, description, author, license, repository,
-                        command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
+                        command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at
                  FROM servers WHERE LOWER(category) LIKE LOWER(?1) ESCAPE '\\' ORDER BY RANDOM() LIMIT 1".into(),
                 vec![pattern],
             )
         } else {
             (
                 "SELECT id, owner, name, version, description, author, license, repository,
-                        command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
+                        command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at
                  FROM servers ORDER BY RANDOM() LIMIT 1".into(),
                 vec![],
             )
@@ -2043,6 +2103,7 @@ mod bulk_and_count_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -2155,7 +2216,7 @@ impl Database {
     pub fn recently_updated(&self, limit: usize) -> Result<Vec<ServerEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at
              FROM servers ORDER BY updated_at DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], row_mapper)?;
@@ -2191,7 +2252,7 @@ impl Database {
     pub fn export_all(&self) -> Result<Vec<ServerEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at
              FROM servers ORDER BY owner, name",
         )?;
         let rows = stmt.query_map([], row_mapper)?;
@@ -2225,7 +2286,7 @@ impl Database {
         let where_clause = conditions.join(" OR ");
         let sql = format!(
             "SELECT id, owner, name, version, description, author, license, repository,
-                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, created_at, updated_at
+                    command, args, transport, tools, resources, prompts, tags, env, homepage, deprecated, deprecated_by, category, downloads, stars, created_at, updated_at
              FROM servers
              WHERE {where_clause}
              ORDER BY downloads DESC
@@ -2302,6 +2363,7 @@ mod regex_search_tests {
                 deprecated: false,
                 deprecated_by: None,
                 downloads: 100,
+                stars: 0,
                 created_at: None,
                 updated_at: None,
             };
@@ -2471,6 +2533,7 @@ mod owners_export_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -2508,6 +2571,7 @@ mod owners_export_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -2551,6 +2615,7 @@ mod resources_db_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -2731,6 +2796,7 @@ mod negation_search_tests {
                 deprecated: false,
                 deprecated_by: None,
                 downloads: 100,
+                stars: 0,
                 created_at: None,
                 updated_at: None,
             };

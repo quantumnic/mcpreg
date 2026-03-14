@@ -108,6 +108,15 @@ pub fn build_router(db_state: DbState) -> Router {
             "/api/v1/servers/:owner/:name/score",
             axum::routing::get(routes::server_score),
         )
+        .route(
+            "/api/v1/servers/:owner/:name/star",
+            axum::routing::post(routes::star_server),
+        )
+        .route(
+            "/api/v1/servers/:owner/:name/unstar",
+            axum::routing::post(routes::unstar_server),
+        )
+        .route("/api/v1/leaderboard", axum::routing::get(routes::leaderboard))
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -143,6 +152,7 @@ mod tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 1500,
+            stars: 0,
             created_at: None,
             updated_at: None,
         })
@@ -287,6 +297,7 @@ mod tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -324,6 +335,7 @@ mod tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -694,6 +706,7 @@ mod improvement_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -731,6 +744,7 @@ mod improvement_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -768,6 +782,7 @@ mod improvement_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -805,6 +820,7 @@ mod improvement_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -1012,6 +1028,7 @@ mod improvement_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -1104,6 +1121,7 @@ mod diff_endpoint_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 100,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -1307,6 +1325,7 @@ mod validate_and_patch_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -1358,6 +1377,7 @@ mod validate_and_patch_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -1404,6 +1424,7 @@ mod validate_and_patch_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -1609,6 +1630,7 @@ mod search_suggestions_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -2468,6 +2490,7 @@ mod random_and_config_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }).unwrap();
@@ -2686,6 +2709,7 @@ mod export_owners_searchany_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -2760,6 +2784,7 @@ mod export_owners_searchany_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -2841,6 +2866,7 @@ mod changelog_and_recent_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -2871,6 +2897,7 @@ mod changelog_and_recent_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 10,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -2993,7 +3020,7 @@ mod resources_endpoint_tests {
     fn test_app() -> axum::Router {
         let db = Database::open_in_memory().unwrap();
         db.seed_default_servers().unwrap();
-        { let db_state = std::sync::Arc::new(tokio::sync::Mutex::new(db)); super::build_router(db_state) }
+        super::build_router(std::sync::Arc::new(tokio::sync::Mutex::new(db)))
     }
 
     #[tokio::test]
@@ -3054,7 +3081,7 @@ mod search_filter_tests {
     fn test_app() -> axum::Router {
         let db = Database::open_in_memory().unwrap();
         db.seed_default_servers().unwrap();
-        { let db_state = std::sync::Arc::new(tokio::sync::Mutex::new(db)); super::build_router(db_state) }
+        super::build_router(std::sync::Arc::new(tokio::sync::Mutex::new(db)))
     }
 
     #[tokio::test]
@@ -3174,6 +3201,7 @@ mod bulk_import_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -3280,6 +3308,7 @@ mod compare_api_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 100,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -3304,6 +3333,7 @@ mod compare_api_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 50,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -3375,6 +3405,7 @@ mod deprecated_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 100,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -3399,6 +3430,7 @@ mod deprecated_tests {
             deprecated: true,
             deprecated_by: Some("alice/new-tool".into()),
             downloads: 50,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -3523,6 +3555,7 @@ mod deprecation_db_tests {
             deprecated,
             deprecated_by: deprecated_by.map(|s| s.to_string()),
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -3808,6 +3841,7 @@ mod bundle_and_score_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }).unwrap();
@@ -3852,6 +3886,7 @@ mod bundle_and_score_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 100,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }).unwrap();
@@ -3876,6 +3911,7 @@ mod bundle_and_score_tests {
             deprecated: true,
             deprecated_by: Some("test/active".into()),
             downloads: 50,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }).unwrap();
@@ -3979,5 +4015,334 @@ mod enhanced_stats_tests {
         assert_eq!(body["total_servers"].as_u64().unwrap(), 0);
         assert_eq!(body["total_tools"].as_u64().unwrap(), 0);
         assert_eq!(body["deprecated_servers"].as_u64().unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod star_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn make_app(db: crate::registry::db::Database) -> axum::Router {
+        let db_state = std::sync::Arc::new(tokio::sync::Mutex::new(db));
+        super::build_router(db_state)
+    }
+
+    fn test_entry() -> crate::api::types::ServerEntry {
+        crate::api::types::ServerEntry {
+            id: None,
+            owner: "startest".into(),
+            name: "starserver".into(),
+            version: "1.0.0".into(),
+            description: "A server for star testing".into(),
+            author: "Tester".into(),
+            license: "MIT".into(),
+            repository: "https://github.com/startest/starserver".into(),
+            command: "starserver".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["tool1".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec!["test".into()],
+            env: std::collections::HashMap::new(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 100,
+            stars: 0,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_star_server() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry()).unwrap();
+        let app = make_app(db);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/servers/startest/starserver/star")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        assert_eq!(body["stars"].as_i64().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_star_server_multiple() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry()).unwrap();
+        let app = make_app(db);
+
+        // Star 3 times
+        for _ in 0..3 {
+            let app2 = app.clone();
+            let resp = app2
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/servers/startest/starserver/star")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200);
+        }
+
+        // Check via GET
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/servers/startest/starserver")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        assert_eq!(body["stars"].as_i64().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_unstar_server() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry()).unwrap();
+        // Star it first
+        db.star_server("startest", "starserver").unwrap();
+        db.star_server("startest", "starserver").unwrap();
+        let app = make_app(db);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/servers/startest/starserver/unstar")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        assert_eq!(body["stars"].as_i64().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_unstar_server_floor_zero() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        db.upsert_server(&test_entry()).unwrap();
+        let app = make_app(db);
+
+        // Unstar when already 0
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/servers/startest/starserver/unstar")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        assert_eq!(body["stars"].as_i64().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_star_not_found() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let app = make_app(db);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/servers/nonexistent/server/star")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn test_leaderboard() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let mut entry1 = test_entry();
+        entry1.downloads = 500;
+        db.upsert_server(&entry1).unwrap();
+
+        let mut entry2 = test_entry();
+        entry2.owner = "other".into();
+        entry2.name = "server2".into();
+        entry2.downloads = 200;
+        db.upsert_server(&entry2).unwrap();
+        // Give server2 more stars
+        for _ in 0..50 {
+            db.star_server("other", "server2").unwrap();
+        }
+
+        let app = make_app(db);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/leaderboard?limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        let leaderboard = body["leaderboard"].as_array().unwrap();
+        assert_eq!(leaderboard.len(), 2);
+        // server2 should be first (200 + 50*10 = 700 > 500)
+        assert_eq!(leaderboard[0]["server"].as_str().unwrap(), "other/server2");
+        assert_eq!(leaderboard[0]["rank"].as_u64().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_leaderboard_empty() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let app = make_app(db);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/leaderboard")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap())
+                .unwrap();
+        assert_eq!(body["total"].as_u64().unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod db_star_tests {
+    use super::*;
+
+    #[test]
+    fn test_db_star_server() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let entry = crate::api::types::ServerEntry {
+            id: None,
+            owner: "test".into(),
+            name: "srv".into(),
+            version: "1.0.0".into(),
+            description: "test".into(),
+            author: "a".into(),
+            license: "MIT".into(),
+            repository: "".into(),
+            command: "cmd".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: std::collections::HashMap::new(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 0,
+            stars: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+
+        // Star
+        assert!(db.star_server("test", "srv").unwrap());
+        assert!(db.star_server("test", "srv").unwrap());
+        let s = db.get_server("test", "srv").unwrap().unwrap();
+        assert_eq!(s.stars, 2);
+
+        // Unstar
+        assert!(db.unstar_server("test", "srv").unwrap());
+        let s = db.get_server("test", "srv").unwrap().unwrap();
+        assert_eq!(s.stars, 1);
+
+        // Unstar to 0
+        assert!(db.unstar_server("test", "srv").unwrap());
+        let s = db.get_server("test", "srv").unwrap().unwrap();
+        assert_eq!(s.stars, 0);
+
+        // Unstar below 0 stays at 0
+        assert!(db.unstar_server("test", "srv").unwrap());
+        let s = db.get_server("test", "srv").unwrap().unwrap();
+        assert_eq!(s.stars, 0);
+    }
+
+    #[test]
+    fn test_db_star_nonexistent() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        assert!(!db.star_server("no", "such").unwrap());
+        assert!(!db.unstar_server("no", "such").unwrap());
+    }
+
+    #[test]
+    fn test_db_leaderboard() {
+        let db = crate::registry::db::Database::open_in_memory().unwrap();
+        let entries = db.leaderboard(10).unwrap();
+        assert!(entries.is_empty());
+
+        let entry = crate::api::types::ServerEntry {
+            id: None,
+            owner: "lb".into(),
+            name: "test".into(),
+            version: "1.0.0".into(),
+            description: "test".into(),
+            author: "a".into(),
+            license: "MIT".into(),
+            repository: "".into(),
+            command: "cmd".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: std::collections::HashMap::new(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 0,
+            stars: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+        let entries = db.leaderboard(10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].owner, "lb");
     }
 }

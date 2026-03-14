@@ -30,6 +30,8 @@ pub enum SortOrder {
     Name,
     /// Sort by most recently updated
     Updated,
+    /// Sort by star count (most starred first)
+    Stars,
 }
 
 #[derive(Subcommand)]
@@ -193,6 +195,12 @@ enum Commands {
         /// Directory to create mcpreg.toml in (default: current directory)
         #[arg(short, long)]
         path: Option<String>,
+    },
+    /// Lint a local mcpreg.toml manifest with detailed checks
+    Lint {
+        /// Path to mcpreg.toml manifest (default: ./mcpreg.toml)
+        #[arg(short, long)]
+        manifest: Option<String>,
     },
     /// Validate an mcpreg.toml manifest
     Validate {
@@ -618,6 +626,7 @@ async fn main() {
         Commands::Tools { query, limit, json } => commands::tools::run(query.as_deref(), limit, json),
         Commands::Prompts { query, json } => commands::prompts::run(query.as_deref(), json),
         Commands::Init { path } => commands::init::run(path.as_deref()),
+        Commands::Lint { manifest } => commands::lint::run(manifest.as_deref()),
         Commands::Validate { manifest, json } => {
             commands::validate::run(manifest.as_deref(), json)
         }

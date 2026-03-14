@@ -1257,6 +1257,35 @@ pub async fn openapi() -> Json<serde_json::Value> {
                     ]
                 }
             },
+            "/api/v1/servers/{owner}/{name}/star": {
+                "post": {
+                    "summary": "Star a server (increment star count)",
+                    "tags": ["Social"],
+                    "parameters": [
+                        {"name": "owner", "in": "path", "required": true},
+                        {"name": "name", "in": "path", "required": true},
+                    ]
+                }
+            },
+            "/api/v1/servers/{owner}/{name}/unstar": {
+                "post": {
+                    "summary": "Unstar a server (decrement star count, min 0)",
+                    "tags": ["Social"],
+                    "parameters": [
+                        {"name": "owner", "in": "path", "required": true},
+                        {"name": "name", "in": "path", "required": true},
+                    ]
+                }
+            },
+            "/api/v1/leaderboard": {
+                "get": {
+                    "summary": "Top servers ranked by combined downloads + stars score",
+                    "tags": ["Social"],
+                    "parameters": [
+                        {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer"}},
+                    ]
+                }
+            },
         }
     }))
 }
@@ -2019,5 +2048,66 @@ pub async fn server_score(
         "percentage": percentage,
         "grade": grade,
         "checks": checks,
+    })))
+}
+
+/// Star a server — increment its star count.
+pub async fn star_server(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let found = db.star_server(&owner, &name)?;
+    if !found {
+        return Err(McpRegError::NotFound(format!("{owner}/{name}")));
+    }
+    let server = db.get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+    Ok(Json(serde_json::json!({
+        "server": server.full_name(),
+        "stars": server.stars,
+    })))
+}
+
+/// Unstar a server — decrement its star count (minimum 0).
+pub async fn unstar_server(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let found = db.unstar_server(&owner, &name)?;
+    if !found {
+        return Err(McpRegError::NotFound(format!("{owner}/{name}")));
+    }
+    let server = db.get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+    Ok(Json(serde_json::json!({
+        "server": server.full_name(),
+        "stars": server.stars,
+    })))
+}
+
+/// Leaderboard — top servers by combined downloads + stars score.
+pub async fn leaderboard(
+    State(db): State<DbState>,
+    Query(params): Query<LimitQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let limit = params.limit.unwrap_or(20).min(100);
+    let db = db.lock().await;
+    let servers = db.leaderboard(limit)?;
+    let entries: Vec<serde_json::Value> = servers.iter().enumerate().map(|(i, s)| {
+        serde_json::json!({
+            "rank": i + 1,
+            "server": s.full_name(),
+            "downloads": s.downloads,
+            "stars": s.stars,
+            "score": s.downloads + s.stars * 10,
+            "description": s.description,
+            "category": crate::registry::seed::server_category(&s.owner, &s.name),
+        })
+    }).collect();
+    Ok(Json(serde_json::json!({
+        "leaderboard": entries,
+        "total": entries.len(),
     })))
 }

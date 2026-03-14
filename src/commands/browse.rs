@@ -40,6 +40,7 @@ pub fn run(page: usize, per_page: usize, category: Option<&str>, sort: &SortOrde
             b_time.cmp(a_time)
         }),
         SortOrder::Downloads => {} // already sorted by downloads from DB
+        SortOrder::Stars => all_servers.sort_by(|a, b| b.stars.cmp(&a.stars)),
     }
 
     // Group by category

@@ -93,6 +93,9 @@ pub struct ServerEntry {
     pub deprecated_by: Option<String>,
     #[serde(default)]
     pub downloads: i64,
+    /// Number of stars/favorites this server has received
+    #[serde(default)]
+    pub stars: i64,
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
@@ -126,6 +129,7 @@ impl ServerEntry {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         }
@@ -275,6 +279,7 @@ tools = ["tool1"]
             deprecated: false,
             deprecated_by: None,
             downloads: 42,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -385,6 +390,7 @@ prompts = ["analyze", "summarize"]
             deprecated: false,
             deprecated_by: None,
             downloads: 42,
+            stars: 0,
             created_at: Some("2024-01-01".into()),
             updated_at: Some("2024-01-02".into()),
         };
@@ -444,6 +450,7 @@ mod additional_tests {
             deprecated: false,
             deprecated_by: None,
             downloads: 0,
+            stars: 0,
             created_at: None,
             updated_at: None,
         };
@@ -528,6 +535,7 @@ mod additional_tests {
                 deprecated: false,
                 deprecated_by: None,
                 downloads: 42,
+                stars: 0,
                 created_at: None,
                 updated_at: None,
             }],

@@ -21,6 +21,7 @@ pub mod info;
 pub mod init;
 pub mod inspect;
 pub mod install;
+pub mod lint;
 pub mod list;
 pub mod outdated;
 pub mod pin;

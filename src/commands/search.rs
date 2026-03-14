@@ -133,6 +133,9 @@ pub async fn run(
             b_time.cmp(a_time)
         }),
         SortOrder::Downloads => {} // already sorted by server
+        SortOrder::Stars => {
+            servers.sort_by(|a, b| b.stars.cmp(&a.stars));
+        }
     }
 
     // Apply limit
