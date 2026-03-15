@@ -1294,6 +1294,17 @@ pub async fn openapi() -> Json<serde_json::Value> {
                     ]
                 }
             },
+            "/api/v1/servers/{owner}/{name}/shield": {
+                "get": {
+                    "summary": "Shields.io-compatible JSON badge (version, downloads, stars, tools, transport)",
+                    "tags": ["Badges"],
+                    "parameters": [
+                        {"name": "owner", "in": "path", "required": true},
+                        {"name": "name", "in": "path", "required": true},
+                        {"name": "metric", "in": "query", "description": "Badge metric: version (default), downloads, stars, tools, transport"},
+                    ]
+                }
+            },
         }
     }))
 }
@@ -2212,6 +2223,74 @@ pub async fn server_badge(
 #[derive(serde::Deserialize)]
 pub struct BadgeQuery {
     pub style: Option<String>,
+}
+
+/// Shields.io-compatible JSON badge endpoint.
+/// Returns { schemaVersion, label, message, color } for use with shields.io custom endpoint badges.
+/// Example: https://img.shields.io/endpoint?url=<your-registry>/api/v1/servers/owner/name/shield
+pub async fn server_shield(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+    Query(params): Query<ShieldQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let server = db.get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+    let metric = params.metric.as_deref().unwrap_or("version");
+    let (label, message, color) = match metric {
+        "downloads" => {
+            let dl = server.downloads;
+            let color = if dl > 10_000 { "brightgreen" } else if dl > 1_000 { "green" } else if dl > 100 { "yellow" } else { "lightgrey" };
+            ("downloads".to_string(), format_downloads_short(dl), color.to_string())
+        }
+        "stars" => {
+            let color = if server.stars > 100 { "brightgreen" } else if server.stars > 10 { "green" } else { "lightgrey" };
+            ("stars".to_string(), format!("⭐ {}", server.stars), color.to_string())
+        }
+        "tools" => {
+            let count = server.tools.len();
+            let color = if count > 5 { "blue" } else if count > 0 { "informational" } else { "lightgrey" };
+            ("tools".to_string(), count.to_string(), color.to_string())
+        }
+        "transport" => {
+            let color = match server.transport.as_str() {
+                "stdio" => "blue",
+                "sse" => "orange",
+                "streamable-http" => "green",
+                _ => "lightgrey",
+            };
+            ("transport".to_string(), server.transport.clone(), color.to_string())
+        }
+        // Default: version
+        _ => {
+            let color = if server.deprecated { "red" } else { "blue" };
+            let label = format!("{}/{}", owner, name);
+            (label, format!("v{}", server.version), color.to_string())
+        }
+    };
+
+    Ok(Json(serde_json::json!({
+        "schemaVersion": 1,
+        "label": label,
+        "message": message,
+        "color": color,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ShieldQuery {
+    pub metric: Option<String>,
+}
+
+pub fn format_downloads_short(n: i64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 /// Bulk search endpoint — search with multiple queries at once.

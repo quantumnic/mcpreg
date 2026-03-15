@@ -29,6 +29,7 @@ pub mod inspect;
 pub mod install;
 pub mod lint;
 pub mod list;
+pub mod lock;
 pub mod outdated;
 pub mod pin;
 pub mod prompts;

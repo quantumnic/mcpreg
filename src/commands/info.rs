@@ -1,6 +1,8 @@
 use crate::api::client::RegistryClient;
+use crate::api::types::ServerEntry;
 use crate::config::Config;
 use crate::error::{McpRegError, Result};
+use crate::registry::db::Database;
 
 pub async fn run(server_ref: &str, json_output: bool) -> Result<()> {
     let parts: Vec<&str> = server_ref.splitn(2, '/').collect();
@@ -11,70 +13,130 @@ pub async fn run(server_ref: &str, json_output: bool) -> Result<()> {
     }
     let (owner, name) = (parts[0], parts[1]);
 
-    let config = Config::load()?;
-    let client = RegistryClient::new(&config);
-    let entry = client.get_server(owner, name).await?;
+    // Try remote first, fall back to local DB
+    let entry = match fetch_remote(owner, name).await {
+        Ok(e) => e,
+        Err(_) => fetch_local(owner, name)?,
+    };
 
     if json_output {
         println!("{}", serde_json::to_string_pretty(&entry)?);
         return Ok(());
     }
 
-    println!("{}/{} v{}", entry.owner, entry.name, entry.version);
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    let cat = crate::registry::seed::server_category(&entry.owner, &entry.name);
+
+    println!("╔═══════════════════════════════════════════════╗");
+    println!(
+        "║  {}/{} v{}",
+        entry.owner, entry.name, entry.version
+    );
+    println!("╠═══════════════════════════════════════════════╣");
     if !entry.description.is_empty() {
-        println!("Description: {}", entry.description);
+        println!("║  {}", entry.description);
+        println!("║");
     }
     if !entry.author.is_empty() {
-        println!("Author:      {}", entry.author);
+        println!("║  Author:      {}", entry.author);
     }
     if !entry.license.is_empty() {
-        println!("License:     {}", entry.license);
+        println!("║  License:     {}", entry.license);
     }
     if !entry.repository.is_empty() {
-        println!("Repository:  {}", entry.repository);
+        println!("║  Repository:  {}", entry.repository);
     }
-    println!("Transport:   {}", entry.transport);
-    println!("Command:     {} {}", entry.command, entry.args.join(" "));
-    println!("Downloads:   {}", entry.downloads);
+    if !entry.homepage.is_empty() {
+        println!("║  Homepage:    {}", entry.homepage);
+    }
+    println!("║  Category:    {cat}");
+    println!("║  Transport:   {}", entry.transport);
+    println!(
+        "║  Command:     {} {}",
+        entry.command,
+        entry.args.join(" ")
+    );
+
+    let dl = crate::color::format_downloads(entry.downloads);
     if entry.stars > 0 {
-        println!("Stars:       {}", entry.stars);
+        let stars = crate::color::format_stars(entry.stars);
+        println!("║  Downloads:   {dl}  |  Stars: {stars}");
+    } else {
+        println!("║  Downloads:   {dl}");
+    }
+
+    if !entry.env.is_empty() {
+        println!("║");
+        println!("║  Environment variables:");
+        for (key, val) in &entry.env {
+            println!("║    {key} = {val}");
+        }
     }
 
     if !entry.tools.is_empty() {
-        println!("\nTools ({}):", entry.tools.len());
+        println!("╠═══════════════════════════════════════════════╣");
+        println!("║  Tools ({}):", entry.tools.len());
         for tool in &entry.tools {
-            println!("  • {tool}");
+            println!("║    • {tool}");
         }
     }
     if !entry.resources.is_empty() {
-        println!("\nResources:");
+        println!("║  Resources ({}):", entry.resources.len());
         for res in &entry.resources {
-            println!("  • {res}");
+            println!("║    • {res}");
         }
     }
     if !entry.prompts.is_empty() {
-        println!("\nPrompts ({}):", entry.prompts.len());
+        println!("║  Prompts ({}):", entry.prompts.len());
         for prompt in &entry.prompts {
-            println!("  • {prompt}");
+            println!("║    • {prompt}");
         }
     }
+    if !entry.tags.is_empty() {
+        println!("║  Tags: {}", entry.tags.join(", "));
+    }
+
+    println!("╠═══════════════════════════════════════════════╣");
     if let Some(ref created) = entry.created_at {
-        println!("\nCreated: {created}");
+        println!("║  Created: {created}");
     }
     if let Some(ref updated) = entry.updated_at {
-        println!("Updated: {updated}");
+        println!("║  Updated: {updated}");
     }
 
     if entry.deprecated {
-        println!("\n⚠️  DEPRECATED");
+        println!("║");
+        println!("║  ⚠️  DEPRECATED");
         if let Some(ref replacement) = entry.deprecated_by {
-            println!("   Replaced by: {replacement}");
+            println!("║     Replaced by: {replacement}");
         }
     }
 
-    // Installation hint
-    println!("\nInstall: mcpreg install {}/{}", entry.owner, entry.name);
+    println!("╚═══════════════════════════════════════════════╝");
+    println!();
+    println!(
+        "  Install: mcpreg install {}/{}",
+        entry.owner, entry.name
+    );
+    println!(
+        "  Badge:   https://img.shields.io/endpoint?url=<registry>/api/v1/servers/{}/{}/shield",
+        entry.owner, entry.name
+    );
 
     Ok(())
+}
+
+async fn fetch_remote(owner: &str, name: &str) -> Result<ServerEntry> {
+    let config = Config::load()?;
+    let client = RegistryClient::new(&config);
+    client.get_server(owner, name).await
+}
+
+fn fetch_local(owner: &str, name: &str) -> Result<ServerEntry> {
+    let db_path = Config::db_path()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "registry.db".to_string());
+    let db = Database::open(&db_path)?;
+    let _ = db.seed_default_servers();
+    db.get_server(owner, name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))
 }

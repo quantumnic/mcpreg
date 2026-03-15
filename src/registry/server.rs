@@ -131,6 +131,10 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/activity", axum::routing::get(routes::recent_activity))
         .route("/api/v1/licenses", axum::routing::get(routes::licenses))
         .route("/api/v1/servers/by-transport", axum::routing::get(routes::search_by_transport))
+        .route(
+            "/api/v1/servers/:owner/:name/shield",
+            axum::routing::get(routes::server_shield),
+        )
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -5245,5 +5249,229 @@ mod cache_command_tests {
         let servers = db.servers_updated_since("2000-01-01T00:00:00").unwrap();
         let total = db.count_servers().unwrap();
         assert_eq!(servers.len(), total);
+    }
+}
+
+#[cfg(test)]
+mod shield_endpoint_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> axum::Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let state: DbState = Arc::new(Mutex::new(db));
+        build_router(state)
+    }
+
+    #[tokio::test]
+    async fn test_shield_default_version() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/shield")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["schemaVersion"], 1);
+        assert!(!body["label"].as_str().unwrap().is_empty());
+        assert!(body["message"].as_str().unwrap().starts_with('v'));
+        assert!(!body["color"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_shield_downloads_metric() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/shield?metric=downloads")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["label"], "downloads");
+    }
+
+    #[tokio::test]
+    async fn test_shield_tools_metric() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/shield?metric=tools")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["label"], "tools");
+    }
+
+    #[tokio::test]
+    async fn test_shield_stars_metric() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/shield?metric=stars")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["label"], "stars");
+    }
+
+    #[tokio::test]
+    async fn test_shield_transport_metric() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/shield?metric=transport")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        assert_eq!(body["label"], "transport");
+        // The message should be one of the valid transport types
+        let msg = body["message"].as_str().unwrap();
+        assert!(["stdio", "sse", "streamable-http"].contains(&msg));
+    }
+
+    #[tokio::test]
+    async fn test_shield_nonexistent_server() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/nonexistent/server/shield")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+mod lock_command_tests {
+    use crate::commands::lock::*;
+    use crate::api::types::{InstalledServer, InstalledServers};
+
+    #[test]
+    fn test_lockfile_roundtrip_with_three_servers() {
+        let installed = InstalledServers {
+            servers: vec![
+                InstalledServer {
+                    owner: "a".into(),
+                    name: "b".into(),
+                    version: "1.0.0".into(),
+                    command: "node".into(),
+                    args: vec!["index.js".into()],
+                    transport: "stdio".into(),
+                    installed_at: "2024-01-01".into(),
+                },
+                InstalledServer {
+                    owner: "c".into(),
+                    name: "d".into(),
+                    version: "2.0.0".into(),
+                    command: "python".into(),
+                    args: vec!["-m".into(), "server".into()],
+                    transport: "sse".into(),
+                    installed_at: "2024-02-01".into(),
+                },
+                InstalledServer {
+                    owner: "e".into(),
+                    name: "f".into(),
+                    version: "0.1.0".into(),
+                    command: "cargo".into(),
+                    args: vec!["run".into()],
+                    transport: "streamable-http".into(),
+                    installed_at: "2024-03-01".into(),
+                },
+            ],
+        };
+        let lockfile = Lockfile::from_installed(&installed);
+        assert_eq!(lockfile.servers.len(), 3);
+
+        // Verify with exact same installed → no drift
+        let drifts = lockfile.verify(&installed);
+        assert!(drifts.is_empty());
+
+        // Serialize + deserialize
+        let json = serde_json::to_string(&lockfile).unwrap();
+        let restored: Lockfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.servers.len(), 3);
+    }
+
+    #[test]
+    fn test_lockfile_verify_multiple_drifts() {
+        let installed = InstalledServers {
+            servers: vec![
+                InstalledServer {
+                    owner: "a".into(), name: "b".into(), version: "1.0.0".into(),
+                    command: "node".into(), args: vec![], transport: "stdio".into(),
+                    installed_at: "2024-01-01".into(),
+                },
+                InstalledServer {
+                    owner: "c".into(), name: "d".into(), version: "2.0.0".into(),
+                    command: "python".into(), args: vec![], transport: "sse".into(),
+                    installed_at: "2024-02-01".into(),
+                },
+            ],
+        };
+        let lockfile = Lockfile::from_installed(&installed);
+
+        // Modify: change version of first, remove second, add new one
+        let modified = InstalledServers {
+            servers: vec![
+                InstalledServer {
+                    owner: "a".into(), name: "b".into(), version: "1.1.0".into(),
+                    command: "node".into(), args: vec![], transport: "stdio".into(),
+                    installed_at: "2024-01-01".into(),
+                },
+                InstalledServer {
+                    owner: "x".into(), name: "y".into(), version: "3.0.0".into(),
+                    command: "go".into(), args: vec![], transport: "stdio".into(),
+                    installed_at: "2024-04-01".into(),
+                },
+            ],
+        };
+        let drifts = lockfile.verify(&modified);
+        assert_eq!(drifts.len(), 3); // version mismatch + missing + extra
+    }
+}
+
+#[cfg(test)]
+mod format_downloads_short_tests {
+    use crate::registry::routes::format_downloads_short;
+
+    #[test]
+    fn test_format_downloads_short_small() {
+        assert_eq!(format_downloads_short(42), "42");
+        assert_eq!(format_downloads_short(999), "999");
+    }
+
+    #[test]
+    fn test_format_downloads_short_thousands() {
+        assert_eq!(format_downloads_short(1_500), "1.5k");
+        assert_eq!(format_downloads_short(10_000), "10.0k");
+    }
+
+    #[test]
+    fn test_format_downloads_short_millions() {
+        assert_eq!(format_downloads_short(1_500_000), "1.5M");
+        assert_eq!(format_downloads_short(10_000_000), "10.0M");
+    }
+
+    #[test]
+    fn test_format_downloads_short_zero() {
+        assert_eq!(format_downloads_short(0), "0");
     }
 }

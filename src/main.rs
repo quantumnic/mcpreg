@@ -542,6 +542,9 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Manage lockfile for reproducible MCP server setups
+    #[command(subcommand)]
+    Lock(LockCommands),
     /// Explain why a server might be useful based on your installed servers
     Why {
         /// Server reference (owner/name)
@@ -658,6 +661,28 @@ enum RateCommands {
     Show {
         /// Server reference (owner/name)
         server: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LockCommands {
+    /// Generate a lockfile from currently installed servers
+    Generate {
+        /// Output file path (default: mcpreg.lock.json)
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify installed servers match the lockfile
+    Verify {
+        /// Path to lockfile (default: mcpreg.lock.json)
+        #[arg(short, long)]
+        file: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -848,6 +873,14 @@ async fn main() {
             }
             RateCommands::Show { server, json } => {
                 commands::rate::show(&server, json)
+            }
+        },
+        Commands::Lock(sub) => match sub {
+            LockCommands::Generate { output, json } => {
+                commands::lock::run_generate(output.as_deref(), json)
+            }
+            LockCommands::Verify { file, json } => {
+                commands::lock::run_verify(file.as_deref(), json)
             }
         },
         Commands::Alias { action, alias, target } => {
