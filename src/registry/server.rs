@@ -135,6 +135,14 @@ pub fn build_router(db_state: DbState) -> Router {
             "/api/v1/servers/:owner/:name/shield",
             axum::routing::get(routes::server_shield),
         )
+        .route(
+            "/api/v1/servers/:owner/:name/readme",
+            axum::routing::get(routes::server_readme),
+        )
+        .route(
+            "/api/v1/servers/:owner/:name/health",
+            axum::routing::get(routes::server_health),
+        )
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -5473,5 +5481,351 @@ mod format_downloads_short_tests {
     #[test]
     fn test_format_downloads_short_zero() {
         assert_eq!(format_downloads_short(0), "0");
+    }
+}
+
+#[cfg(test)]
+mod readme_tests {
+    use super::*;
+    use crate::api::types::ServerEntry;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    fn test_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        let entry = ServerEntry {
+            id: None,
+            owner: "alice".into(),
+            name: "toolbox".into(),
+            version: "2.1.0".into(),
+            description: "A comprehensive toolbox server".into(),
+            author: "alice".into(),
+            license: "MIT".into(),
+            repository: "https://github.com/alice/toolbox".into(),
+            command: "node".into(),
+            args: vec!["index.js".into()],
+            transport: "stdio".into(),
+            tools: vec!["read_file".into(), "write_file".into(), "list_dir".into()],
+            resources: vec!["file://".into()],
+            prompts: vec!["summarize".into()],
+            tags: vec!["filesystem".into(), "tools".into()],
+            env: std::collections::HashMap::from([
+                ("HOME_DIR".to_string(), "/home/user".to_string()),
+            ]),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 1500,
+            stars: 42,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_readme_endpoint() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/api/v1/servers/alice/toolbox/readme")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let readme = v["readme"].as_str().unwrap();
+        assert!(readme.contains("alice/toolbox"));
+        assert!(readme.contains("2.1.0"));
+        assert!(readme.contains("read_file"));
+        assert!(readme.contains("summarize"));
+        assert!(readme.contains("file://"));
+        assert!(readme.contains("MIT"));
+        assert_eq!(v["format"].as_str().unwrap(), "markdown");
+    }
+
+    #[tokio::test]
+    async fn test_readme_not_found() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/api/v1/servers/nobody/nothing/readme")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_server_health_endpoint() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/api/v1/servers/alice/toolbox/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let score = v["score"].as_u64().unwrap();
+        assert!(score >= 80, "Well-filled server should score >= 80, got {score}");
+        let grade = v["grade"].as_str().unwrap();
+        assert!(grade == "A" || grade == "B", "Expected A or B, got {grade}");
+        let checks = v["checks"].as_array().unwrap();
+        assert!(!checks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_server_health_not_found() {
+        let app = test_app();
+        let req = Request::builder()
+            .uri("/api/v1/servers/nobody/nothing/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use crate::registry::db::Database;
+    use crate::api::types::ServerEntry;
+
+    #[test]
+    fn test_export_all_and_reimport() {
+        let db = Database::open_in_memory().unwrap();
+        let entry = ServerEntry {
+            id: None,
+            owner: "snap".into(),
+            name: "test".into(),
+            version: "1.0.0".into(),
+            description: "Snapshot test".into(),
+            author: "dev".into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec!["t1".into()],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec!["test".into()],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 100,
+            stars: 5,
+            created_at: None,
+            updated_at: None,
+        };
+        db.upsert_server(&entry).unwrap();
+
+        // Export
+        let exported = db.export_all().unwrap();
+        assert_eq!(exported.len(), 1);
+        assert_eq!(exported[0].owner, "snap");
+
+        // Import into fresh DB
+        let db2 = Database::open_in_memory().unwrap();
+        for e in &exported {
+            db2.upsert_server(e).unwrap();
+        }
+        let reimported = db2.export_all().unwrap();
+        assert_eq!(reimported.len(), 1);
+        assert_eq!(reimported[0].name, "test");
+        assert_eq!(reimported[0].tools, vec!["t1"]);
+    }
+}
+
+#[cfg(test)]
+mod config_extra_tests {
+    use crate::config::Config;
+
+    #[test]
+    fn test_config_toml_with_custom_registry() {
+        let toml_str = r#"
+registry_url = "http://my-registry:8080"
+api_key = "secret123"
+install_dir = "/opt/mcp-servers"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.registry_url, "http://my-registry:8080");
+        assert_eq!(config.api_key.unwrap(), "secret123");
+        assert_eq!(config.install_dir.unwrap(), "/opt/mcp-servers");
+    }
+
+    #[test]
+    fn test_config_toml_minimal() {
+        let toml_str = r#"
+registry_url = "https://example.com"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.registry_url, "https://example.com");
+        assert!(config.api_key.is_none());
+    }
+}
+
+#[cfg(test)]
+mod db_edge_case_tests {
+    use crate::registry::db::Database;
+    use crate::api::types::ServerEntry;
+
+    fn make_server(owner: &str, name: &str) -> ServerEntry {
+        ServerEntry {
+            id: None,
+            owner: owner.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            description: format!("{name} server"),
+            author: owner.into(),
+            license: "MIT".into(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 0,
+            stars: 0,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_upsert_updates_existing() {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = make_server("alice", "tool");
+        db.upsert_server(&entry).unwrap();
+
+        entry.version = "2.0.0".to_string();
+        entry.description = "Updated description".to_string();
+        db.upsert_server(&entry).unwrap();
+
+        let fetched = db.get_server("alice", "tool").unwrap().unwrap();
+        assert_eq!(fetched.version, "2.0.0");
+        assert_eq!(fetched.description, "Updated description");
+    }
+
+    #[test]
+    fn test_delete_nonexistent_returns_false() {
+        let db = Database::open_in_memory().unwrap();
+        let result = db.delete_server("nobody", "nothing").unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_search_empty_query_returns_all() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_server("a", "one")).unwrap();
+        db.upsert_server(&make_server("b", "two")).unwrap();
+        let results = db.search("").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_search_case_insensitive() {
+        let db = Database::open_in_memory().unwrap();
+        let mut entry = make_server("dev", "MyTool");
+        entry.description = "A Tool for Everything".into();
+        db.upsert_server(&entry).unwrap();
+
+        let results = db.search("mytool").unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_increment_downloads() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_server("x", "y")).unwrap();
+        let before = db.get_server("x", "y").unwrap().unwrap().downloads;
+        db.increment_downloads("x", "y").unwrap();
+        let after = db.get_server("x", "y").unwrap().unwrap().downloads;
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_star_and_unstar() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_server("s", "t")).unwrap();
+
+        db.star_server("s", "t").unwrap();
+        let stars = db.get_server("s", "t").unwrap().unwrap().stars;
+        assert_eq!(stars, 1);
+
+        db.star_server("s", "t").unwrap();
+        let stars = db.get_server("s", "t").unwrap().unwrap().stars;
+        assert_eq!(stars, 2);
+
+        db.unstar_server("s", "t").unwrap();
+        let stars = db.get_server("s", "t").unwrap().unwrap().stars;
+        assert_eq!(stars, 1);
+    }
+
+    #[test]
+    fn test_count_servers() {
+        let db = Database::open_in_memory().unwrap();
+        assert_eq!(db.count_servers().unwrap(), 0);
+        db.upsert_server(&make_server("a", "b")).unwrap();
+        assert_eq!(db.count_servers().unwrap(), 1);
+        db.upsert_server(&make_server("c", "d")).unwrap();
+        assert_eq!(db.count_servers().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_list_servers_pagination() {
+        let db = Database::open_in_memory().unwrap();
+        for i in 0..15 {
+            db.upsert_server(&make_server("o", &format!("s{i}"))).unwrap();
+        }
+        let (page1, total) = db.list_servers(1, 5).unwrap();
+        assert_eq!(page1.len(), 5);
+        assert_eq!(total, 15);
+
+        let (page2, _) = db.list_servers(2, 5).unwrap();
+        assert_eq!(page2.len(), 5);
+
+        let (page3, _) = db.list_servers(3, 5).unwrap();
+        assert_eq!(page3.len(), 5);
+
+        let (page4, _) = db.list_servers(4, 5).unwrap();
+        assert!(page4.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_prefix_matching() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_server("alice", "filesystem")).unwrap();
+        db.upsert_server(&make_server("alice", "filewatcher")).unwrap();
+        db.upsert_server(&make_server("bob", "database")).unwrap();
+
+        let suggestions = db.suggest("file", 10).unwrap();
+        assert!(suggestions.len() >= 2);
+        assert!(suggestions.iter().all(|s| s.contains("file")));
+    }
+
+    #[test]
+    fn test_bulk_delete() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_server(&make_server("a", "1")).unwrap();
+        db.upsert_server(&make_server("b", "2")).unwrap();
+        db.upsert_server(&make_server("c", "3")).unwrap();
+
+        let deleted = db.bulk_delete(&[
+            ("a".into(), "1".into()),
+            ("c".into(), "3".into()),
+        ]).unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(db.count_servers().unwrap(), 1);
     }
 }

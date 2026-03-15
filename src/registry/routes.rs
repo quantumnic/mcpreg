@@ -2431,3 +2431,199 @@ pub async fn search_by_transport(
         "transport": transport,
     })))
 }
+
+/// Generate a README / summary for a server based on its metadata.
+pub async fn server_readme(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let server = db.get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+    let mut sections = Vec::new();
+
+    // Title + description
+    sections.push(format!("# {}/{}\n", server.owner, server.name));
+    if !server.description.is_empty() {
+        sections.push(format!("{}\n", server.description));
+    }
+
+    // Badges
+    let mut badges = Vec::new();
+    badges.push(format!("**v{}**", server.version));
+    if !server.license.is_empty() {
+        badges.push(format!("License: {}", server.license));
+    }
+    badges.push(format!("⬇ {}", server.downloads));
+    if server.stars > 0 {
+        badges.push(format!("⭐ {}", server.stars));
+    }
+    sections.push(badges.join(" | "));
+    sections.push(String::new());
+
+    // Installation
+    sections.push("## Installation\n".to_string());
+    sections.push(format!("```bash\nmcpreg install {}/{}\n```\n", server.owner, server.name));
+
+    // Transport
+    sections.push(format!("**Transport:** {}\n", server.transport));
+
+    // Tools
+    if !server.tools.is_empty() {
+        sections.push("## Tools\n".to_string());
+        for tool in &server.tools {
+            sections.push(format!("- `{tool}`"));
+        }
+        sections.push(String::new());
+    }
+
+    // Resources
+    if !server.resources.is_empty() {
+        sections.push("## Resources\n".to_string());
+        for res in &server.resources {
+            sections.push(format!("- `{res}`"));
+        }
+        sections.push(String::new());
+    }
+
+    // Prompts
+    if !server.prompts.is_empty() {
+        sections.push("## Prompts\n".to_string());
+        for p in &server.prompts {
+            sections.push(format!("- `{p}`"));
+        }
+        sections.push(String::new());
+    }
+
+    // Tags
+    if !server.tags.is_empty() {
+        sections.push(format!("**Tags:** {}\n", server.tags.join(", ")));
+    }
+
+    // Environment
+    if !server.env.is_empty() {
+        sections.push("## Environment Variables\n".to_string());
+        for (key, val) in &server.env {
+            sections.push(format!("- `{key}`: {val}"));
+        }
+        sections.push(String::new());
+    }
+
+    // Deprecation
+    if server.deprecated {
+        let replacement = server.deprecated_by.as_deref().unwrap_or("unknown");
+        sections.push(format!(
+            "\n> ⚠️ **DEPRECATED** — replaced by {replacement}\n"
+        ));
+    }
+
+    let readme = sections.join("\n");
+
+    Ok(Json(serde_json::json!({
+        "server": format!("{}/{}", server.owner, server.name),
+        "readme": readme,
+        "format": "markdown",
+    })))
+}
+
+/// Server health / uptime check based on metadata quality.
+pub async fn server_health(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let server = db.get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+    let mut score = 0u32;
+    let mut checks = Vec::new();
+
+    // Check description
+    if !server.description.is_empty() {
+        score += 20;
+        checks.push(("description", true, "Has description"));
+    } else {
+        checks.push(("description", false, "Missing description"));
+    }
+
+    // Check license
+    if !server.license.is_empty() {
+        score += 15;
+        checks.push(("license", true, "License specified"));
+    } else {
+        checks.push(("license", false, "No license"));
+    }
+
+    // Check repository
+    if !server.repository.is_empty() {
+        score += 15;
+        checks.push(("repository", true, "Repository linked"));
+    } else {
+        checks.push(("repository", false, "No repository URL"));
+    }
+
+    // Check tools
+    if !server.tools.is_empty() {
+        score += 20;
+        checks.push(("tools", true, "Tools declared"));
+    } else {
+        checks.push(("tools", false, "No tools declared"));
+    }
+
+    // Check tags
+    if !server.tags.is_empty() {
+        score += 10;
+        checks.push(("tags", true, "Tags present"));
+    } else {
+        checks.push(("tags", false, "No tags"));
+    }
+
+    // Deprecation penalty
+    if server.deprecated {
+        score = score.saturating_sub(30);
+        checks.push(("deprecated", false, "Server is deprecated"));
+    }
+
+    // Version check
+    if !server.version.is_empty() && server.version != "0.0.0" {
+        score += 10;
+        checks.push(("version", true, "Version set"));
+    } else {
+        checks.push(("version", false, "No meaningful version"));
+    }
+
+    // Author check
+    if !server.author.is_empty() {
+        score += 10;
+        checks.push(("author", true, "Author specified"));
+    } else {
+        checks.push(("author", false, "No author"));
+    }
+
+    let grade = match score {
+        90..=100 => "A",
+        75..=89 => "B",
+        60..=74 => "C",
+        40..=59 => "D",
+        _ => "F",
+    };
+
+    let check_results: Vec<serde_json::Value> = checks
+        .iter()
+        .map(|(name, passed, msg)| {
+            serde_json::json!({
+                "check": name,
+                "passed": passed,
+                "message": msg,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "server": format!("{}/{}", server.owner, server.name),
+        "score": score,
+        "grade": grade,
+        "checks": check_results,
+    })))
+}

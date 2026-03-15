@@ -575,6 +575,27 @@ enum Commands {
         json: bool,
     },
 
+    /// Watch installed servers for available updates
+    Watch {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show a timeline of recent registry activity
+    Timeline {
+        /// Maximum number of events (default: 30)
+        #[arg(short = 'n', long, default_value = "30")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Save or restore a full registry snapshot
+    #[command(subcommand)]
+    Snapshot(SnapshotCommands),
+
     /// Show top servers ranked by various criteria (tools, resources, downloads, etc.)
     Top {
         /// Ranking criterion: tools, resources, prompts, downloads, newest, category
@@ -686,6 +707,24 @@ enum LockCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SnapshotCommands {
+    /// Save the full registry to a JSON snapshot
+    Save {
+        /// Output file path (prints to stdout if not given)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Restore a registry from a JSON snapshot
+    Restore {
+        /// Path to snapshot JSON file
+        file: String,
+        /// Show what would be restored without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -890,6 +929,12 @@ async fn main() {
         Commands::Why { server, json } => commands::why::run(&server, json),
         Commands::Inspect { server, json } => commands::inspect::run(&server, json),
         Commands::Cache { action, json } => commands::cache::run(action.as_deref(), json),
+        Commands::Watch { json } => commands::watch::run(json).await,
+        Commands::Timeline { limit, json } => commands::timeline::run(limit, json),
+        Commands::Snapshot(sub) => match sub {
+            SnapshotCommands::Save { output } => commands::snapshot::run_save(output.as_deref()),
+            SnapshotCommands::Restore { file, dry_run } => commands::snapshot::run_restore(&file, dry_run),
+        },
         Commands::Top { by, limit, json } => commands::top::run(&by, limit, json),
     };
 

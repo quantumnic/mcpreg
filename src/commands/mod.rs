@@ -56,3 +56,6 @@ pub mod validate;
 pub mod versions;
 pub mod which;
 pub mod profile;
+pub mod watch;
+pub mod timeline;
+pub mod snapshot;

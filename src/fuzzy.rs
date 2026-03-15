@@ -927,3 +927,142 @@ mod additional_fuzzy_tests {
         // Just verify no panics with unicode
     }
 }
+
+/// Compute Damerau-Levenshtein distance between two strings (case-insensitive).
+/// Unlike plain Levenshtein, this also considers transpositions of adjacent characters
+/// as a single edit operation, which better models real-world typos (e.g. "teh" → "the").
+#[allow(dead_code)]
+pub fn damerau_levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.to_lowercase().chars().collect();
+    let b: Vec<char> = b.to_lowercase().chars().collect();
+    let m = a.len();
+    let n = b.len();
+
+    if m == 0 { return n; }
+    if n == 0 { return m; }
+
+    // We need (m+2) x (n+2) matrix for the full Damerau algorithm
+    let inf = m + n;
+    let mut d = vec![vec![inf; n + 2]; m + 2];
+
+    d[0][0] = inf;
+    for i in 0..=m {
+        d[i + 1][0] = inf;
+        d[i + 1][1] = i;
+    }
+    for j in 0..=n {
+        d[0][j + 1] = inf;
+        d[1][j + 1] = j;
+    }
+
+    // Last seen position of each character in `a`
+    let mut last_row: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
+
+    for i in 1..=m {
+        let mut last_col = 0usize;
+        for j in 1..=n {
+            let i1 = *last_row.get(&b[j - 1]).unwrap_or(&0);
+            let j1 = last_col;
+            let cost = if a[i - 1] == b[j - 1] {
+                last_col = j;
+                0
+            } else {
+                1
+            };
+            d[i + 1][j + 1] = (d[i][j] + cost)              // substitution
+                .min(d[i + 1][j] + 1)                        // insertion
+                .min(d[i][j + 1] + 1)                        // deletion
+                .min(d[i1][j1] + (i - i1 - 1) + 1 + (j - j1 - 1)); // transposition
+        }
+        last_row.insert(a[i - 1], i);
+    }
+    d[m + 1][n + 1]
+}
+
+/// Improved suggestion engine using Damerau-Levenshtein for better typo tolerance.
+/// Falls back to the existing `suggest` when results are equivalent.
+#[allow(dead_code)]
+pub fn suggest_typo_tolerant(query: &str, candidates: &[String], max_results: usize) -> Vec<(String, usize)> {
+    let mut scored: Vec<(String, usize)> = candidates
+        .iter()
+        .map(|c| {
+            // Score each candidate by Damerau-Levenshtein on name portion
+            let name_part = c.split('/').next_back().unwrap_or(c);
+            let dist = damerau_levenshtein(query, name_part);
+            (c.clone(), dist)
+        })
+        .filter(|(_, d)| *d <= query.len().max(3))
+        .collect();
+    scored.sort_by_key(|(_, d)| *d);
+    scored.truncate(max_results);
+    scored
+}
+
+#[cfg(test)]
+mod damerau_tests {
+    use super::*;
+
+    #[test]
+    fn test_damerau_identical() {
+        assert_eq!(damerau_levenshtein("hello", "hello"), 0);
+    }
+
+    #[test]
+    fn test_damerau_transposition() {
+        // "ab" → "ba" is 1 transposition (DL=1), but Levenshtein=2
+        assert_eq!(damerau_levenshtein("ab", "ba"), 1);
+    }
+
+    #[test]
+    fn test_damerau_vs_levenshtein_transposition() {
+        // Verify DL gives lower distance for transpositions
+        let dl = damerau_levenshtein("teh", "the");
+        let lev = levenshtein("teh", "the");
+        assert_eq!(dl, 1);
+        assert_eq!(lev, 2);
+        assert!(dl < lev);
+    }
+
+    #[test]
+    fn test_damerau_empty_strings() {
+        assert_eq!(damerau_levenshtein("", ""), 0);
+        assert_eq!(damerau_levenshtein("abc", ""), 3);
+        assert_eq!(damerau_levenshtein("", "xyz"), 3);
+    }
+
+    #[test]
+    fn test_damerau_single_char() {
+        assert_eq!(damerau_levenshtein("a", "b"), 1);
+        assert_eq!(damerau_levenshtein("a", "a"), 0);
+    }
+
+    #[test]
+    fn test_damerau_case_insensitive() {
+        assert_eq!(damerau_levenshtein("Hello", "hello"), 0);
+        assert_eq!(damerau_levenshtein("ABC", "bac"), 1);
+    }
+
+    #[test]
+    fn test_damerau_complex() {
+        // "kitten" → "sitting": 3 edits
+        assert_eq!(damerau_levenshtein("kitten", "sitting"), 3);
+    }
+
+    #[test]
+    fn test_suggest_typo_tolerant_basic() {
+        let candidates = vec![
+            "alice/filesystem".to_string(),
+            "bob/database".to_string(),
+            "carol/filesync".to_string(),
+        ];
+        let results = suggest_typo_tolerant("filesystme", &candidates, 3);
+        assert!(!results.is_empty());
+        assert_eq!(results[0].0, "alice/filesystem");
+    }
+
+    #[test]
+    fn test_suggest_typo_tolerant_empty() {
+        let results = suggest_typo_tolerant("xyz", &[], 3);
+        assert!(results.is_empty());
+    }
+}
