@@ -83,6 +83,7 @@ pub fn build_router(db_state: DbState) -> Router {
         .route("/api/v1/export", axum::routing::get(routes::export_registry))
         .route("/api/v1/owners", axum::routing::get(routes::list_owners))
         .route("/api/v1/search/any", axum::routing::get(routes::search_any))
+        .route("/api/v1/search/regex", axum::routing::get(routes::search_regex))
         .route("/api/v1/changelog", axum::routing::get(routes::changelog))
         .route("/api/v1/recently-updated", axum::routing::get(routes::recently_updated))
         .route(

@@ -2270,6 +2270,26 @@ pub async fn related_servers(
     }))
 }
 
+/// Regex search (GET /api/v1/search/regex?pattern=...)
+pub async fn search_regex(
+    State(db): State<DbState>,
+    Query(params): Query<RegexQuery>,
+) -> Result<Json<SearchResponse>, McpRegError> {
+    let pattern = params.pattern.unwrap_or_default();
+    if pattern.is_empty() {
+        return Ok(Json(SearchResponse { servers: vec![], total: 0, suggestions: None }));
+    }
+    let db = db.lock().await;
+    let servers = db.search_regex(&pattern)?;
+    let total = servers.len();
+    Ok(Json(SearchResponse { servers, total, suggestions: None }))
+}
+
+#[derive(Deserialize)]
+pub struct RegexQuery {
+    pub pattern: Option<String>,
+}
+
 /// Recently published versions across all servers.
 pub async fn recent_activity(
     State(db): State<DbState>,

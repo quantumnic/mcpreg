@@ -20,6 +20,7 @@ impl Database {
         let conn = Connection::open_in_memory()?;
         let db = Self { conn };
         db.init_tables()?;
+        db.migrate()?;
         Ok(db)
     }
 
@@ -172,6 +173,19 @@ impl Database {
                 UNIQUE(owner, name, version)
             );
             CREATE INDEX IF NOT EXISTS idx_versions_server ON server_versions(owner, name);"
+        )?;
+
+        // Create ratings table if missing
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS server_ratings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner TEXT NOT NULL,
+                name TEXT NOT NULL,
+                rating INTEGER NOT NULL CHECK(rating >= 1 AND rating <= 5),
+                comment TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_ratings_server ON server_ratings(owner, name);"
         )?;
 
         Ok(())
@@ -3159,5 +3173,163 @@ mod related_servers_tests {
         let db = create_test_db();
         let related = db.find_related("modelcontextprotocol", "filesystem", 0).unwrap();
         assert!(related.is_empty());
+    }
+}
+
+impl Database {
+    /// Add a rating for a server.
+    pub fn add_rating(&self, owner: &str, name: &str, rating: u8, comment: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO server_ratings (owner, name, rating, comment) VALUES (?1, ?2, ?3, ?4)",
+            params![owner, name, rating as i32, comment.unwrap_or("")],
+        )?;
+        Ok(())
+    }
+
+    /// Get average rating and count for a server.
+    pub fn get_rating_stats(&self, owner: &str, name: &str) -> Result<(f64, usize)> {
+        let result = self.conn.query_row(
+            "SELECT COALESCE(AVG(rating), 0.0), COUNT(*) FROM server_ratings WHERE owner = ?1 AND name = ?2",
+            params![owner, name],
+            |row| Ok((row.get::<_, f64>(0)?, row.get::<_, usize>(1)?)),
+        )?;
+        Ok(result)
+    }
+
+    /// Get recent ratings for a server.
+    pub fn get_ratings(&self, owner: &str, name: &str, limit: usize) -> Result<Vec<(u8, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rating, comment, created_at FROM server_ratings
+             WHERE owner = ?1 AND name = ?2
+             ORDER BY id DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![owner, name, limit as i64], |row| {
+            Ok((
+                row.get::<_, i32>(0)? as u8,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    /// Get top-rated servers (minimum 2 ratings).
+    #[allow(dead_code)]
+    pub fn top_rated(&self, limit: usize) -> Result<Vec<(String, String, f64, usize)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT owner, name, AVG(rating) as avg_r, COUNT(*) as cnt
+             FROM server_ratings
+             GROUP BY owner, name
+             HAVING cnt >= 2
+             ORDER BY avg_r DESC, cnt DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, usize>(3)?,
+            ))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod rating_tests {
+    use super::*;
+
+    fn setup_db() -> Database {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        db
+    }
+
+    #[test]
+    fn test_add_and_get_rating() {
+        let db = setup_db();
+        db.add_rating("modelcontextprotocol", "filesystem", 5, Some("Great!")).unwrap();
+        let (avg, count) = db.get_rating_stats("modelcontextprotocol", "filesystem").unwrap();
+        assert_eq!(count, 1);
+        assert!((avg - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_multiple_ratings_average() {
+        let db = setup_db();
+        db.add_rating("modelcontextprotocol", "filesystem", 5, None).unwrap();
+        db.add_rating("modelcontextprotocol", "filesystem", 3, None).unwrap();
+        let (avg, count) = db.get_rating_stats("modelcontextprotocol", "filesystem").unwrap();
+        assert_eq!(count, 2);
+        assert!((avg - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_no_ratings_returns_zero() {
+        let db = setup_db();
+        let (avg, count) = db.get_rating_stats("modelcontextprotocol", "filesystem").unwrap();
+        assert_eq!(count, 0);
+        assert!((avg - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_get_ratings_list() {
+        let db = setup_db();
+        db.add_rating("modelcontextprotocol", "filesystem", 5, Some("Excellent")).unwrap();
+        db.add_rating("modelcontextprotocol", "filesystem", 4, Some("Good")).unwrap();
+        let ratings = db.get_ratings("modelcontextprotocol", "filesystem", 10).unwrap();
+        assert_eq!(ratings.len(), 2);
+        assert_eq!(ratings[0].0, 4); // newest first
+        assert_eq!(ratings[0].1, "Good");
+        assert_eq!(ratings[1].0, 5);
+        assert_eq!(ratings[1].1, "Excellent");
+    }
+
+    #[test]
+    fn test_top_rated_needs_minimum_ratings() {
+        let db = setup_db();
+        // Single rating shouldn't appear in top_rated (minimum 2)
+        db.add_rating("modelcontextprotocol", "filesystem", 5, None).unwrap();
+        let top = db.top_rated(10).unwrap();
+        assert!(top.is_empty());
+
+        // Add second rating
+        db.add_rating("modelcontextprotocol", "filesystem", 4, None).unwrap();
+        let top = db.top_rated(10).unwrap();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].0, "modelcontextprotocol");
+        assert_eq!(top[0].1, "filesystem");
+    }
+
+    #[test]
+    fn test_rating_empty_comment() {
+        let db = setup_db();
+        db.add_rating("modelcontextprotocol", "filesystem", 3, None).unwrap();
+        let ratings = db.get_ratings("modelcontextprotocol", "filesystem", 1).unwrap();
+        assert_eq!(ratings[0].1, "");
+    }
+
+    #[test]
+    fn test_ratings_for_different_servers() {
+        let db = setup_db();
+        db.add_rating("modelcontextprotocol", "filesystem", 5, None).unwrap();
+        db.add_rating("modelcontextprotocol", "sqlite", 3, None).unwrap();
+
+        let (avg_fs, count_fs) = db.get_rating_stats("modelcontextprotocol", "filesystem").unwrap();
+        let (avg_sq, count_sq) = db.get_rating_stats("modelcontextprotocol", "sqlite").unwrap();
+
+        assert_eq!(count_fs, 1);
+        assert_eq!(count_sq, 1);
+        assert!((avg_fs - 5.0).abs() < f64::EPSILON);
+        assert!((avg_sq - 3.0).abs() < f64::EPSILON);
     }
 }

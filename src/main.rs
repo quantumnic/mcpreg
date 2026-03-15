@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
 
 mod api;
+mod color;
 mod commands;
 mod config;
 mod error;
@@ -553,6 +554,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Rate an MCP server (1-5 stars) with an optional review comment
+    #[command(subcommand)]
+    Rate(RateCommands),
+
     /// Show top servers ranked by various criteria (tools, resources, downloads, etc.)
     Top {
         /// Ranking criterion: tools, resources, prompts, downloads, newest, category
@@ -616,6 +621,32 @@ enum ProfileCommands {
     Import {
         /// Path to profile JSON file
         file: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RateCommands {
+    /// Rate a server (1-5 stars)
+    Add {
+        /// Server reference (owner/name)
+        server: String,
+        /// Rating (1-5 stars)
+        #[arg(short, long)]
+        stars: u8,
+        /// Optional review comment
+        #[arg(short, long)]
+        comment: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show ratings for a server
+    Show {
+        /// Server reference (owner/name)
+        server: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -791,6 +822,14 @@ async fn main() {
             }
             FavoriteCommands::Remove { server } => commands::favorites::remove(&server),
             FavoriteCommands::List { json } => commands::favorites::list(json),
+        },
+        Commands::Rate(sub) => match sub {
+            RateCommands::Add { server, stars, comment, json } => {
+                commands::rate::run(&server, stars, comment.as_deref(), json)
+            }
+            RateCommands::Show { server, json } => {
+                commands::rate::show(&server, json)
+            }
         },
         Commands::Alias { action, alias, target } => {
             commands::alias::run_alias(action, alias, target)

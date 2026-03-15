@@ -179,24 +179,22 @@ pub async fn run(
         return Ok(());
     }
 
+    // Collect search terms for highlighting
+    let search_terms: Vec<&str> = query.split_whitespace().collect();
+
     if compact {
         for (i, server) in servers.iter().enumerate() {
+            let name = crate::color::highlight_matches(&server.full_name(), &search_terms);
+            let dl = crate::color::format_downloads(server.downloads);
             if verbose {
                 println!(
                     "#{:<3} {} v{} — {} (⬇ {})",
-                    i + 1,
-                    server.full_name(),
-                    server.version,
-                    server.description,
-                    server.downloads,
+                    i + 1, name, server.version, server.description, dl,
                 );
             } else {
                 println!(
                     "{} v{} — {} (⬇ {})",
-                    server.full_name(),
-                    server.version,
-                    server.description,
-                    server.downloads,
+                    name, server.version, server.description, dl,
                 );
             }
         }
@@ -204,26 +202,24 @@ pub async fn run(
         println!("Found {} server(s) matching '{query}':\n", servers.len());
         for (i, server) in servers.iter().enumerate() {
             let cat = crate::registry::seed::server_category(&server.owner, &server.name);
+            let name = crate::color::highlight_matches(&server.full_name(), &search_terms);
+            let desc = crate::color::highlight_matches(&server.description, &search_terms);
+            let dl = crate::color::format_downloads(server.downloads);
             if verbose {
                 println!(
                     "  #{} {} v{} — {}  [{}]",
-                    i + 1,
-                    server.full_name(),
-                    server.version,
-                    server.description,
-                    cat,
+                    i + 1, name, server.version, desc, cat,
                 );
             } else {
                 println!(
                     "  {} v{} — {}  [{}]",
-                    server.full_name(),
-                    server.version,
-                    server.description,
-                    cat,
+                    name, server.version, desc, cat,
                 );
             }
             if !server.tools.is_empty() {
-                let tools_display: Vec<_> = server.tools.iter().take(5).cloned().collect();
+                let tools_display: Vec<String> = server.tools.iter().take(5).map(|t| {
+                    crate::color::highlight_matches(t, &search_terms)
+                }).collect();
                 let suffix = if server.tools.len() > 5 {
                     format!(" (+{} more)", server.tools.len() - 5)
                 } else {
@@ -238,26 +234,22 @@ pub async fn run(
                 let replacement = server.deprecated_by.as_deref().unwrap_or("unknown");
                 println!("    ⚠️  DEPRECATED — replaced by {replacement}");
             }
+            let stars_str = crate::color::format_stars(server.stars);
+            let stars_display = if stars_str.is_empty() {
+                String::new()
+            } else {
+                format!(" | {stars_str}")
+            };
             if verbose {
-                let stars_str = if server.stars > 0 {
-                    format!(" | ★ {}", server.stars)
-                } else {
-                    String::new()
-                };
                 println!(
-                    "    ⬇ {} downloads{} | {} | {} | {} tools | {} tags",
-                    server.downloads, stars_str, server.license, server.transport,
+                    "    ⬇ {}{} | {} | {} | {} tools | {} tags",
+                    dl, stars_display, server.license, server.transport,
                     server.tools.len(), server.tags.len(),
                 );
             } else {
-                let stars_str = if server.stars > 0 {
-                    format!(" | ★ {}", server.stars)
-                } else {
-                    String::new()
-                };
                 println!(
-                    "    ⬇ {} downloads{} | {} | {}",
-                    server.downloads, stars_str, server.license, server.transport
+                    "    ⬇ {}{} | {} | {}",
+                    dl, stars_display, server.license, server.transport
                 );
             }
             println!();
