@@ -622,6 +622,31 @@ enum Commands {
         json: bool,
     },
 
+    /// Find duplicate/overlapping servers by tool similarity (Jaccard index)
+    Dedupe {
+        /// Minimum overlap threshold (0.0-1.0, default: 0.5 = 50%)
+        #[arg(short, long, default_value = "0.5")]
+        threshold: f64,
+        /// Maximum number of pairs to show
+        #[arg(short = 'n', long, default_value = "20")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Import servers from a JSON file into the local registry
+    Import {
+        /// Path to JSON file (export format or bare array)
+        file: String,
+        /// Show what would be imported without making changes
+        #[arg(long)]
+        dry_run: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Show top servers ranked by various criteria (tools, resources, downloads, etc.)
     Top {
         /// Ranking criterion: tools, resources, prompts, downloads, newest, category
@@ -968,6 +993,8 @@ async fn main() {
         },
         Commands::BatchInstall { servers, dry_run } => commands::batch_install::run(&servers, dry_run).await,
         Commands::Tree { server, depth, json } => commands::tree::run(server.as_deref(), depth, json),
+        Commands::Dedupe { threshold, limit, json } => commands::dedupe::run(threshold, limit, json),
+        Commands::Import { file, dry_run, json } => commands::import_cmd::run(&file, dry_run, json),
         Commands::Top { by, limit, json } => commands::top::run(&by, limit, json),
     };
 

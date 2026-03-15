@@ -61,3 +61,5 @@ pub mod profile;
 pub mod watch;
 pub mod timeline;
 pub mod snapshot;
+pub mod dedupe;
+pub mod import_cmd;

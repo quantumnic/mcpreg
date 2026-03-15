@@ -143,6 +143,7 @@ pub async fn search(
                 let b_time = b.updated_at.as_deref().unwrap_or("");
                 b_time.cmp(a_time)
             }),
+            "stars" => servers.sort_by(|a, b| b.stars.cmp(&a.stars)),
             _ => {} // "downloads" or default — already sorted
         }
     }
@@ -1318,6 +1319,40 @@ pub async fn openapi() -> Json<serde_json::Value> {
                         {"name": "owner", "in": "path", "required": true},
                         {"name": "name", "in": "path", "required": true},
                         {"name": "metric", "in": "query", "description": "Badge metric: version (default), downloads, stars, tools, transport"},
+                    ]
+                }
+            },
+            "/api/v1/coverage": {
+                "get": {
+                    "summary": "Tool coverage statistics — how many servers expose each tool",
+                    "tags": ["Analytics"],
+                    "parameters": [
+                        {"name": "min_servers", "in": "query", "description": "Only show tools present in at least this many servers"},
+                        {"name": "limit", "in": "query", "description": "Max results"},
+                    ]
+                }
+            },
+            "/api/v1/servers/{owner}/{name}/neighbors": {
+                "get": {
+                    "summary": "Graph neighbors — servers connected via shared tools",
+                    "tags": ["Discovery"],
+                    "parameters": [
+                        {"name": "owner", "in": "path", "required": true},
+                        {"name": "name", "in": "path", "required": true},
+                        {"name": "limit", "in": "query", "description": "Max neighbors (default 10, max 50)"},
+                        {"name": "min_shared", "in": "query", "description": "Min shared tools to count as neighbor (default 1)"},
+                    ]
+                }
+            },
+            "/api/v1/search/advanced": {
+                "get": {
+                    "summary": "Advanced search with negation (prefix terms with ! to exclude)",
+                    "tags": ["Servers"],
+                    "parameters": [
+                        {"name": "q", "in": "query", "description": "Search query with !term exclusion support"},
+                        {"name": "category", "in": "query"},
+                        {"name": "sort", "in": "query"},
+                        {"name": "limit", "in": "query"},
                     ]
                 }
             },
@@ -2642,4 +2677,224 @@ pub async fn server_health(
         "grade": grade,
         "checks": check_results,
     })))
+}
+
+/// Tool coverage statistics: how many servers expose each tool, grouped/ranked.
+pub async fn tool_coverage(
+    State(db): State<DbState>,
+    Query(params): Query<CoverageQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let min_servers = params.min_servers.unwrap_or(1);
+    let db = db.lock().await;
+    let tool_list = db.list_tools()?;
+
+    let mut coverage: Vec<serde_json::Value> = tool_list
+        .into_iter()
+        .filter(|(_, servers)| servers.len() >= min_servers)
+        .map(|(tool, servers)| {
+            serde_json::json!({
+                "tool": tool,
+                "server_count": servers.len(),
+                "servers": servers,
+            })
+        })
+        .collect();
+
+    // Sort by server_count descending
+    coverage.sort_by(|a, b| {
+        let ac = a["server_count"].as_u64().unwrap_or(0);
+        let bc = b["server_count"].as_u64().unwrap_or(0);
+        bc.cmp(&ac)
+    });
+
+    if let Some(limit) = params.limit {
+        coverage.truncate(limit);
+    }
+
+    let total_tools: usize = coverage.len();
+    let unique_servers: std::collections::HashSet<&str> = coverage
+        .iter()
+        .flat_map(|c| {
+            c["servers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap())
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "coverage": coverage,
+        "total_tools": total_tools,
+        "total_servers": unique_servers.len(),
+        "min_servers_filter": min_servers,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct CoverageQuery {
+    pub min_servers: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+/// Graph neighbors: servers directly connected to a given server via shared tools.
+pub async fn server_neighbors(
+    State(db): State<DbState>,
+    Path((owner, name)): Path<(String, String)>,
+    Query(params): Query<NeighborsQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let limit = params.limit.unwrap_or(10).min(50);
+    let min_shared = params.min_shared.unwrap_or(1);
+    let db = db.lock().await;
+
+    let target = db.get_server(&owner, &name)?
+        .ok_or_else(|| McpRegError::NotFound(format!("{owner}/{name}")))?;
+
+    let target_tools: std::collections::HashSet<&str> =
+        target.tools.iter().map(|t| t.as_str()).collect();
+
+    if target_tools.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "server": format!("{owner}/{name}"),
+            "neighbors": [],
+            "total": 0,
+        })));
+    }
+
+    let all = db.list_all()?;
+    let mut neighbors: Vec<serde_json::Value> = Vec::new();
+
+    for server in &all {
+        if server.owner == owner && server.name == name {
+            continue;
+        }
+
+        let server_tools: std::collections::HashSet<&str> =
+            server.tools.iter().map(|t| t.as_str()).collect();
+
+        let shared: Vec<String> = target_tools
+            .intersection(&server_tools)
+            .map(|t| t.to_string())
+            .collect();
+
+        if shared.len() >= min_shared {
+            neighbors.push(serde_json::json!({
+                "server": server.full_name(),
+                "shared_tools": shared,
+                "shared_count": shared.len(),
+                "total_tools": server.tools.len(),
+                "transport": server.transport,
+            }));
+        }
+    }
+
+    // Sort by shared_count descending
+    neighbors.sort_by(|a, b| {
+        let ac = a["shared_count"].as_u64().unwrap_or(0);
+        let bc = b["shared_count"].as_u64().unwrap_or(0);
+        bc.cmp(&ac)
+    });
+    neighbors.truncate(limit);
+    let total = neighbors.len();
+
+    Ok(Json(serde_json::json!({
+        "server": format!("{owner}/{name}"),
+        "neighbors": neighbors,
+        "total": total,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct NeighborsQuery {
+    pub limit: Option<usize>,
+    pub min_shared: Option<usize>,
+}
+
+/// Search with negation: terms prefixed with ! exclude matching servers.
+pub async fn search_advanced(
+    State(db): State<DbState>,
+    Query(params): Query<SearchQuery>,
+) -> Result<Json<SearchResponse>, McpRegError> {
+    let raw_query = params.q.unwrap_or_default();
+    let db = db.lock().await;
+
+    // Split into include and exclude terms
+    let mut include_terms = Vec::new();
+    let mut exclude_terms = Vec::new();
+    for term in raw_query.split_whitespace() {
+        if let Some(stripped) = term.strip_prefix('!') {
+            if !stripped.is_empty() {
+                exclude_terms.push(stripped.to_lowercase());
+            }
+        } else {
+            include_terms.push(term.to_string());
+        }
+    }
+
+    let include_query = include_terms.join(" ");
+    let mut servers = if include_query.is_empty() {
+        db.list_all()?
+    } else {
+        db.search(&include_query)?
+    };
+
+    // Apply exclusions
+    for exclude in &exclude_terms {
+        servers.retain(|s| {
+            let haystack = format!(
+                "{} {} {} {} {}",
+                s.owner, s.name, s.description, s.author,
+                s.tools.join(" ")
+            ).to_lowercase();
+            !haystack.contains(exclude)
+        });
+    }
+
+    // Apply standard filters
+    if let Some(ref cat) = params.category {
+        let cat_lower = cat.to_lowercase();
+        servers.retain(|s| {
+            crate::registry::seed::server_category(&s.owner, &s.name)
+                .to_lowercase()
+                .contains(&cat_lower)
+        });
+    }
+    if let Some(min) = params.min_downloads {
+        servers.retain(|s| s.downloads >= min);
+    }
+    if let Some(ref tool) = params.tool {
+        let tool_lower = tool.to_lowercase();
+        servers.retain(|s| s.tools.iter().any(|t| t.to_lowercase().contains(&tool_lower)));
+    }
+    if params.exclude_deprecated.unwrap_or(false) {
+        servers.retain(|s| !s.deprecated);
+    }
+    if let Some(min) = params.min_stars {
+        servers.retain(|s| s.stars >= min);
+    }
+    if let Some(ref license) = params.license {
+        let lic_lower = license.to_lowercase();
+        servers.retain(|s| s.license.to_lowercase().contains(&lic_lower));
+    }
+
+    // Sort
+    if let Some(ref sort) = params.sort {
+        match sort.as_str() {
+            "name" => servers.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+            "updated" => servers.sort_by(|a, b| {
+                let at = a.updated_at.as_deref().unwrap_or("");
+                let bt = b.updated_at.as_deref().unwrap_or("");
+                bt.cmp(at)
+            }),
+            "stars" => servers.sort_by(|a, b| b.stars.cmp(&a.stars)),
+            _ => {}
+        }
+    }
+
+    if let Some(n) = params.limit {
+        servers.truncate(n);
+    }
+
+    let total = servers.len();
+    Ok(Json(SearchResponse { servers, total, suggestions: None }))
 }

@@ -144,6 +144,12 @@ pub fn build_router(db_state: DbState) -> Router {
             "/api/v1/servers/:owner/:name/health",
             axum::routing::get(routes::server_health),
         )
+        .route("/api/v1/coverage", axum::routing::get(routes::tool_coverage))
+        .route(
+            "/api/v1/servers/:owner/:name/neighbors",
+            axum::routing::get(routes::server_neighbors),
+        )
+        .route("/api/v1/search/advanced", axum::routing::get(routes::search_advanced))
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -5871,5 +5877,400 @@ mod db_edge_case_tests {
         ]).unwrap();
         assert_eq!(deleted, 2);
         assert_eq!(db.count_servers().unwrap(), 1);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_coverage_default() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/coverage")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total_tools"].as_u64().unwrap() > 0);
+        assert!(result["total_servers"].as_u64().unwrap() > 0);
+        let coverage = result["coverage"].as_array().unwrap();
+        assert!(!coverage.is_empty());
+        // Should be sorted by server_count desc
+        if coverage.len() >= 2 {
+            let c0 = coverage[0]["server_count"].as_u64().unwrap();
+            let c1 = coverage[1]["server_count"].as_u64().unwrap();
+            assert!(c0 >= c1, "Should be sorted by server_count desc");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_coverage_with_min_servers() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/coverage?min_servers=2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let coverage = result["coverage"].as_array().unwrap();
+        for item in coverage {
+            assert!(item["server_count"].as_u64().unwrap() >= 2,
+                "All tools should have >= 2 servers");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_coverage_with_limit() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/coverage?limit=3")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["coverage"].as_array().unwrap().len() <= 3);
+    }
+}
+
+#[cfg(test)]
+mod neighbors_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_neighbors_default() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/neighbors")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["server"], "modelcontextprotocol/filesystem");
+        let neighbors = result["neighbors"].as_array().unwrap();
+        // filesystem has tools that other servers share
+        for n in neighbors {
+            assert!(n["shared_count"].as_u64().unwrap() >= 1);
+            assert!(!n["shared_tools"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_neighbors_with_limit() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/neighbors?limit=2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["neighbors"].as_array().unwrap().len() <= 2);
+    }
+
+    #[tokio::test]
+    async fn test_api_neighbors_with_min_shared() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/neighbors?min_shared=2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        for n in result["neighbors"].as_array().unwrap() {
+            assert!(n["shared_count"].as_u64().unwrap() >= 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_neighbors_not_found() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/nobody/nothing/neighbors")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_api_neighbors_excludes_self() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/neighbors")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        for n in result["neighbors"].as_array().unwrap() {
+            assert_ne!(n["server"], "modelcontextprotocol/filesystem",
+                "Neighbors should not include self");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_neighbors_sorted_by_shared_count() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/modelcontextprotocol/filesystem/neighbors")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let neighbors = result["neighbors"].as_array().unwrap();
+        if neighbors.len() >= 2 {
+            let c0 = neighbors[0]["shared_count"].as_u64().unwrap();
+            let c1 = neighbors[1]["shared_count"].as_u64().unwrap();
+            assert!(c0 >= c1, "Should be sorted desc");
+        }
+    }
+}
+
+#[cfg(test)]
+mod advanced_search_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_advanced_search_basic() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search/advanced?q=database")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(result.total > 0, "Should find database servers");
+    }
+
+    #[tokio::test]
+    async fn test_advanced_search_with_negation() {
+        let app = seeded_app().await;
+        // Search for servers but exclude postgres
+        let req = Request::builder()
+            .uri("/api/v1/search/advanced?q=database%20!postgres")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        for s in &result.servers {
+            let haystack = format!("{} {} {}", s.owner, s.name, s.description).to_lowercase();
+            assert!(!haystack.contains("postgres"),
+                "Should not contain postgres: {}", s.full_name());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_advanced_search_only_negation() {
+        let app = seeded_app().await;
+        // Exclude filesystem from all results
+        let req = Request::builder()
+            .uri("/api/v1/search/advanced?q=!filesystem")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        for s in &result.servers {
+            assert_ne!(s.name, "filesystem",
+                "filesystem should be excluded");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_advanced_search_with_sort_stars() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search/advanced?q=&sort=stars")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        if result.servers.len() >= 2 {
+            assert!(result.servers[0].stars >= result.servers[1].stars,
+                "Should be sorted by stars desc");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_advanced_search_empty_query() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search/advanced?q=")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        assert!(result.total >= 30, "Empty query should return all servers");
+    }
+}
+
+#[cfg(test)]
+mod search_sort_stars_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_main_search_sort_by_stars() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/search?q=&sort=stars")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: crate::api::types::SearchResponse = serde_json::from_slice(&body).unwrap();
+        if result.servers.len() >= 2 {
+            assert!(result.servers[0].stars >= result.servers[1].stars,
+                "Main search should support sort=stars");
+        }
+    }
+}
+
+#[cfg(test)]
+mod openapi_new_endpoints_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn seeded_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_openapi_includes_v032_endpoints() {
+        let app = seeded_app().await;
+        let req = Request::builder()
+            .uri("/api/v1/openapi")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let paths = result["paths"].as_object().unwrap();
+        assert!(paths.contains_key("/api/v1/coverage"), "Should document /coverage");
+        assert!(paths.contains_key("/api/v1/servers/{owner}/{name}/neighbors"),
+            "Should document /neighbors");
+        assert!(paths.contains_key("/api/v1/search/advanced"),
+            "Should document /search/advanced");
+    }
+}
+
+#[cfg(test)]
+mod cli_new_commands_tests {
+    #[test]
+    fn test_cli_parses_dedupe() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg", "dedupe", "--threshold", "0.7", "--json",
+        ]);
+        assert!(cli.is_ok(), "dedupe should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_dedupe_defaults() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg", "dedupe",
+        ]);
+        assert!(cli.is_ok(), "dedupe with defaults should parse");
+    }
+
+    #[test]
+    fn test_cli_parses_import() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg", "import", "servers.json", "--dry-run",
+        ]);
+        assert!(cli.is_ok(), "import should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_import_json() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg", "import", "data.json", "--json",
+        ]);
+        assert!(cli.is_ok(), "import --json should parse");
     }
 }
