@@ -2315,3 +2315,40 @@ pub async fn recent_activity(
 }
 
 
+
+/// List license distribution across all servers.
+pub async fn licenses(
+    State(db): State<DbState>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let license_counts = db.count_by_license()?;
+    let entries: Vec<serde_json::Value> = license_counts
+        .iter()
+        .map(|(license, count)| {
+            serde_json::json!({
+                "license": license,
+                "count": count,
+            })
+        })
+        .collect();
+    let total: usize = license_counts.iter().map(|(_, c)| c).sum();
+    Ok(Json(serde_json::json!({
+        "licenses": entries,
+        "total_servers": total,
+    })))
+}
+
+/// Search servers by transport type.
+pub async fn search_by_transport(
+    State(db): State<DbState>,
+    Query(params): Query<SearchQuery>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let transport = params.transport.unwrap_or_else(|| "stdio".to_string());
+    let db = db.lock().await;
+    let servers = db.search_by_transport(&transport)?;
+    Ok(Json(serde_json::json!({
+        "servers": servers,
+        "total": servers.len(),
+        "transport": transport,
+    })))
+}

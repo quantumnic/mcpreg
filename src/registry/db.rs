@@ -3016,6 +3016,125 @@ impl Database {
         }
         Ok(results)
     }
+
+    /// Count servers grouped by license.
+    pub fn count_by_license(&self) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT COALESCE(NULLIF(license, ''), 'unspecified') AS lic, COUNT(*)
+             FROM servers
+             GROUP BY lic
+             ORDER BY COUNT(*) DESC"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    /// Search servers by transport type.
+    pub fn search_by_transport(&self, transport: &str) -> Result<Vec<ServerEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, owner, name, version, description, author, license, repository,
+                    command, args, transport, tools, resources, prompts, tags, env,
+                    homepage, deprecated, deprecated_by, category, downloads, stars,
+                    created_at, updated_at
+             FROM servers
+             WHERE LOWER(transport) = LOWER(?1)
+             ORDER BY downloads DESC"
+        )?;
+        let rows = stmt.query_map(params![transport], row_mapper)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?.into_entry());
+        }
+        Ok(results)
+    }
+
+    /// Get servers updated after a given datetime string (ISO 8601).
+    #[allow(dead_code)]
+    pub fn servers_updated_since(&self, since: &str) -> Result<Vec<ServerEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, owner, name, version, description, author, license, repository,
+                    command, args, transport, tools, resources, prompts, tags, env,
+                    homepage, deprecated, deprecated_by, category, downloads, stars,
+                    created_at, updated_at
+             FROM servers
+             WHERE updated_at > ?1
+             ORDER BY updated_at DESC"
+        )?;
+        let rows = stmt.query_map(params![since], row_mapper)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?.into_entry());
+        }
+        Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod new_db_method_tests {
+    use super::*;
+
+    fn create_test_db() -> Database {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        db
+    }
+
+    #[test]
+    fn test_count_by_license() {
+        let db = create_test_db();
+        let licenses = db.count_by_license().unwrap();
+        assert!(!licenses.is_empty(), "Should have at least one license group");
+        let total: usize = licenses.iter().map(|(_, c)| c).sum();
+        let count = db.count_servers().unwrap();
+        assert_eq!(total, count, "License counts should sum to total servers");
+    }
+
+    #[test]
+    fn test_search_by_transport_stdio() {
+        let db = create_test_db();
+        let servers = db.search_by_transport("stdio").unwrap();
+        assert!(!servers.is_empty(), "Should have stdio servers");
+        for s in &servers {
+            assert_eq!(s.transport.to_lowercase(), "stdio");
+        }
+    }
+
+    #[test]
+    fn test_search_by_transport_case_insensitive() {
+        let db = create_test_db();
+        let lower = db.search_by_transport("stdio").unwrap();
+        let upper = db.search_by_transport("STDIO").unwrap();
+        assert_eq!(lower.len(), upper.len());
+    }
+
+    #[test]
+    fn test_search_by_transport_nonexistent() {
+        let db = create_test_db();
+        let servers = db.search_by_transport("websocket").unwrap();
+        assert!(servers.is_empty());
+    }
+
+    #[test]
+    fn test_servers_updated_since_far_past() {
+        let db = create_test_db();
+        let servers = db.servers_updated_since("2000-01-01T00:00:00").unwrap();
+        // All servers should be newer than year 2000
+        let total = db.count_servers().unwrap();
+        assert_eq!(servers.len(), total);
+    }
+
+    #[test]
+    fn test_servers_updated_since_far_future() {
+        let db = create_test_db();
+        let servers = db.servers_updated_since("2099-01-01T00:00:00").unwrap();
+        assert!(servers.is_empty());
+    }
 }
 
 #[cfg(test)]

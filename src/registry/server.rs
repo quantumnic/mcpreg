@@ -129,6 +129,8 @@ pub fn build_router(db_state: DbState) -> Router {
         )
         .route("/api/v1/search/bulk", axum::routing::post(routes::bulk_search))
         .route("/api/v1/activity", axum::routing::get(routes::recent_activity))
+        .route("/api/v1/licenses", axum::routing::get(routes::licenses))
+        .route("/api/v1/servers/by-transport", axum::routing::get(routes::search_by_transport))
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -5082,5 +5084,166 @@ mod related_api_tests {
         let resp = app.oneshot(req).await.unwrap();
         // Should return error (404 or 500 depending on error handling)
         assert_ne!(resp.status(), StatusCode::OK);
+    }
+}
+
+#[cfg(test)]
+mod licenses_api_tests {
+    use super::*;
+    use crate::registry::db::Database;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn app_with_seeded_db() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_licenses_returns_200() {
+        let app = app_with_seeded_db().await;
+        let req = Request::builder()
+            .uri("/api/v1/licenses")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_licenses_has_entries() {
+        let app = app_with_seeded_db().await;
+        let req = Request::builder()
+            .uri("/api/v1/licenses")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let licenses = result["licenses"].as_array().unwrap();
+        assert!(!licenses.is_empty(), "Should have at least one license group");
+        let total = result["total_servers"].as_u64().unwrap();
+        assert!(total > 0);
+    }
+
+    #[tokio::test]
+    async fn test_api_licenses_sums_to_total() {
+        let app = app_with_seeded_db().await;
+        let req = Request::builder()
+            .uri("/api/v1/licenses")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let licenses = result["licenses"].as_array().unwrap();
+        let sum: u64 = licenses.iter().map(|l| l["count"].as_u64().unwrap()).sum();
+        let total = result["total_servers"].as_u64().unwrap();
+        assert_eq!(sum, total, "License counts should sum to total_servers");
+    }
+}
+
+#[cfg(test)]
+mod search_by_transport_api_tests {
+    use super::*;
+    use crate::registry::db::Database;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn app_with_seeded_db() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_search_by_transport_default() {
+        let app = app_with_seeded_db().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/by-transport")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["transport"], "stdio");
+        let servers = result["servers"].as_array().unwrap();
+        assert!(!servers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_api_search_by_transport_sse() {
+        let app = app_with_seeded_db().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/by-transport?transport=sse")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["transport"], "sse");
+    }
+
+    #[tokio::test]
+    async fn test_api_search_by_transport_nonexistent() {
+        let app = app_with_seeded_db().await;
+        let req = Request::builder()
+            .uri("/api/v1/servers/by-transport?transport=websocket")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let servers = result["servers"].as_array().unwrap();
+        assert!(servers.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod cache_command_tests {
+    use super::*;
+    use crate::registry::db::Database;
+
+    #[test]
+    fn test_db_count_by_license() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let licenses = db.count_by_license().unwrap();
+        assert!(!licenses.is_empty());
+        // All entries should have positive counts
+        for (license, count) in &licenses {
+            assert!(!license.is_empty(), "License should not be empty");
+            assert!(*count > 0, "Count should be positive for {license}");
+        }
+    }
+
+    #[test]
+    fn test_db_search_by_transport() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let stdio_servers = db.search_by_transport("stdio").unwrap();
+        assert!(!stdio_servers.is_empty());
+        // All results should have stdio transport
+        for s in &stdio_servers {
+            assert_eq!(s.transport.to_lowercase(), "stdio");
+        }
+    }
+
+    #[test]
+    fn test_db_servers_updated_since() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        // All servers should be updated after 2000
+        let servers = db.servers_updated_since("2000-01-01T00:00:00").unwrap();
+        let total = db.count_servers().unwrap();
+        assert_eq!(servers.len(), total);
     }
 }

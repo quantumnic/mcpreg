@@ -18,6 +18,10 @@ use clap::{Parser, Subcommand, ValueEnum};
     long_about = "mcpreg — search, install, publish, and manage MCP (Model Context Protocol) servers.\n\nLike npm or crates.io, but for MCP servers. Self-hostable."
 )]
 pub struct Cli {
+    /// Disable colored output
+    #[arg(long, global = true)]
+    no_color: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -558,6 +562,16 @@ enum Commands {
     #[command(subcommand)]
     Rate(RateCommands),
 
+    /// Manage the local cache (status, clear, path)
+    Cache {
+        /// Action: status, clear, path
+        #[arg(default_value = "status")]
+        action: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Show top servers ranked by various criteria (tools, resources, downloads, etc.)
     Top {
         /// Ranking criterion: tools, resources, prompts, downloads, newest, category
@@ -678,6 +692,11 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
+
+    // Apply --no-color flag via the NO_COLOR env var convention
+    if cli.no_color {
+        std::env::set_var("NO_COLOR", "1");
+    }
 
     let config = config::Config::load().unwrap_or_default();
 
@@ -837,6 +856,7 @@ async fn main() {
         Commands::Clean { dry_run } => commands::clean::run_clean(dry_run),
         Commands::Why { server, json } => commands::why::run(&server, json),
         Commands::Inspect { server, json } => commands::inspect::run(&server, json),
+        Commands::Cache { action, json } => commands::cache::run(action.as_deref(), json),
         Commands::Top { by, limit, json } => commands::top::run(&by, limit, json),
     };
 

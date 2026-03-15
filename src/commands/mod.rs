@@ -1,4 +1,5 @@
 pub mod alias;
+pub mod cache;
 pub mod audit;
 pub mod backup;
 pub mod bundle;
