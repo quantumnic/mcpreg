@@ -2898,3 +2898,64 @@ pub async fn search_advanced(
     let total = servers.len();
     Ok(Json(SearchResponse { servers, total, suggestions: None }))
 }
+
+/// GET /api/v1/owners/:owner/stats — aggregated statistics for an owner
+#[allow(dead_code)]
+pub async fn owner_stats(
+    State(db): State<DbState>,
+    Path(owner): Path<String>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    match db.owner_stats(&owner)? {
+        Some(stats) => Ok(Json(serde_json::json!({
+            "owner": stats.owner,
+            "server_count": stats.server_count,
+            "total_downloads": stats.total_downloads,
+            "total_stars": stats.total_stars,
+            "total_tools": stats.total_tools,
+            "transports": stats.transports,
+            "avg_tools_per_server": stats.avg_tools_per_server,
+        }))),
+        None => Err(McpRegError::NotFound(format!("Owner '{owner}' not found"))),
+    }
+}
+
+/// GET /api/v1/search/tags — search by multiple tags (AND logic)
+#[allow(dead_code)]
+pub async fn search_by_tags_multi(
+    State(db): State<DbState>,
+    Query(params): Query<TagsMultiQuery>,
+) -> Result<Json<SearchResponse>, McpRegError> {
+    let tags_str = params.tags.unwrap_or_default();
+    let tags: Vec<&str> = tags_str.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+
+    if tags.is_empty() {
+        return Ok(Json(SearchResponse { servers: vec![], total: 0, suggestions: None }));
+    }
+
+    let db = db.lock().await;
+    let servers = db.search_by_multiple_tags(&tags)?;
+    let total = servers.len();
+    Ok(Json(SearchResponse { servers, total, suggestions: None }))
+}
+
+#[derive(Deserialize)]
+pub struct TagsMultiQuery {
+    pub tags: Option<String>,
+}
+
+/// GET /api/v1/owners — list all owners with server counts
+#[allow(dead_code)]
+pub async fn list_owners_detailed(
+    State(db): State<DbState>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let owners = db.list_owners_with_counts()?;
+    Ok(Json(serde_json::json!({
+        "owners": owners.iter().map(|(name, count)| serde_json::json!({
+            "name": name,
+            "server_count": count,
+        })).collect::<Vec<_>>(),
+        "total": owners.len(),
+    })))
+}

@@ -647,6 +647,22 @@ enum Commands {
         json: bool,
     },
 
+    /// Generate MCP configuration from registry servers
+    Compose {
+        /// Output format: json (Claude Desktop), toml, env
+        #[arg(short, long, default_value = "json")]
+        format: String,
+        /// Filter by owner
+        #[arg(long)]
+        owner: Option<String>,
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
+        /// Only include installed servers
+        #[arg(long)]
+        installed: bool,
+    },
+
     /// Show top servers ranked by various criteria (tools, resources, downloads, etc.)
     Top {
         /// Ranking criterion: tools, resources, prompts, downloads, newest, category
@@ -996,6 +1012,9 @@ async fn main() {
         Commands::Dedupe { threshold, limit, json } => commands::dedupe::run(threshold, limit, json),
         Commands::Import { file, dry_run, json } => commands::import_cmd::run(&file, dry_run, json),
         Commands::Top { by, limit, json } => commands::top::run(&by, limit, json),
+        Commands::Compose { format, owner, tag, installed } => {
+            commands::compose::run(&format, owner.as_deref(), tag.as_deref(), installed)
+        }
     };
 
     if let Err(e) = result {

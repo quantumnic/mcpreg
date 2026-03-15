@@ -150,6 +150,11 @@ pub fn build_router(db_state: DbState) -> Router {
             axum::routing::get(routes::server_neighbors),
         )
         .route("/api/v1/search/advanced", axum::routing::get(routes::search_advanced))
+        .route(
+            "/api/v1/owners/:owner/stats",
+            axum::routing::get(routes::owner_stats),
+        )
+        .route("/api/v1/search/tags", axum::routing::get(routes::search_by_tags_multi))
         .layer(CorsLayer::permissive())
         .with_state(db_state)
 }
@@ -6272,5 +6277,163 @@ mod cli_new_commands_tests {
             "mcpreg", "import", "data.json", "--json",
         ]);
         assert!(cli.is_ok(), "import --json should parse");
+    }
+}
+
+#[cfg(test)]
+mod compose_and_owner_stats_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn test_app() -> Router {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        build_router(db_state)
+    }
+
+    #[test]
+    fn test_cli_parses_compose() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg", "compose", "--format", "json",
+        ]);
+        assert!(cli.is_ok(), "compose should parse: {:?}", cli.err());
+    }
+
+    #[test]
+    fn test_cli_parses_compose_toml() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg", "compose", "--format", "toml", "--owner", "modelcontextprotocol",
+        ]);
+        assert!(cli.is_ok(), "compose --format toml should parse");
+    }
+
+    #[test]
+    fn test_cli_parses_compose_env() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg", "compose", "--format", "env", "--installed",
+        ]);
+        assert!(cli.is_ok(), "compose --format env should parse");
+    }
+
+    #[test]
+    fn test_cli_parses_compose_with_tag() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "mcpreg", "compose", "--tag", "database",
+        ]);
+        assert!(cli.is_ok(), "compose --tag should parse");
+    }
+
+    #[tokio::test]
+    async fn test_api_owner_stats() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/owners/modelcontextprotocol/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["owner"], "modelcontextprotocol");
+        assert!(result["server_count"].as_u64().unwrap() > 0);
+        assert!(result["total_tools"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_api_owner_stats_not_found() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/owners/nonexistent-xyz/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_api_search_tags_multi() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/search/tags?tags=database")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["total"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_api_search_tags_empty() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/search/tags")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_api_owner_stats_has_transports() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/owners/modelcontextprotocol/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let transports = result["transports"].as_array().unwrap();
+        assert!(!transports.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_api_owner_stats_avg_tools() {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/owners/modelcontextprotocol/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let avg = result["avg_tools_per_server"].as_f64().unwrap();
+        assert!(avg >= 0.0);
     }
 }

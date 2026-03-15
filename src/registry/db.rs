@@ -3452,3 +3452,173 @@ mod rating_tests {
         assert!((avg_sq - 3.0).abs() < f64::EPSILON);
     }
 }
+
+/// Owner statistics
+#[derive(Debug, serde::Serialize)]
+pub struct OwnerStats {
+    pub owner: String,
+    pub server_count: usize,
+    pub total_downloads: i64,
+    pub total_stars: i64,
+    pub total_tools: usize,
+    pub transports: Vec<String>,
+    pub avg_tools_per_server: f64,
+}
+
+impl Database {
+    /// Get aggregated statistics for a specific owner.
+    pub fn owner_stats(&self, owner: &str) -> Result<Option<OwnerStats>> {
+        let servers = self.list_all()?;
+        let owner_servers: Vec<_> = servers.iter().filter(|s| s.owner == owner).collect();
+
+        if owner_servers.is_empty() {
+            return Ok(None);
+        }
+
+        let server_count = owner_servers.len();
+        let total_downloads: i64 = owner_servers.iter().map(|s| s.downloads).sum();
+        let total_stars: i64 = owner_servers.iter().map(|s| s.stars).sum();
+        let total_tools: usize = owner_servers.iter().map(|s| s.tools.len()).sum();
+        let avg_tools = if server_count > 0 { total_tools as f64 / server_count as f64 } else { 0.0 };
+
+        let mut transports: Vec<String> = owner_servers.iter().map(|s| s.transport.clone()).collect();
+        transports.sort();
+        transports.dedup();
+
+        Ok(Some(OwnerStats {
+            owner: owner.to_string(),
+            server_count,
+            total_downloads,
+            total_stars,
+            total_tools,
+            transports,
+            avg_tools_per_server: avg_tools,
+        }))
+    }
+
+    /// Search servers matching ALL of the given tags.
+    pub fn search_by_multiple_tags(&self, tags: &[&str]) -> Result<Vec<ServerEntry>> {
+        let all = self.list_all()?;
+        let filtered = all.into_iter().filter(|s| {
+            tags.iter().all(|tag| {
+                let tag_lower = tag.to_lowercase();
+                s.tags.iter().any(|t| t.to_lowercase() == tag_lower)
+            })
+        }).collect();
+        Ok(filtered)
+    }
+
+    /// List all unique owners with their server counts.
+    pub fn list_owners_with_counts(&self) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT owner, COUNT(*) as cnt FROM servers GROUP BY owner ORDER BY cnt DESC"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    /// Get total server count.
+    #[allow(dead_code)]
+    pub fn total_count(&self) -> Result<usize> {
+        let count: usize = self.conn.query_row(
+            "SELECT COUNT(*) FROM servers", [], |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod owner_stats_tests {
+    use super::*;
+
+    fn create_test_db() -> Database {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        db
+    }
+
+    #[test]
+    fn test_owner_stats_found() {
+        let db = create_test_db();
+        let stats = db.owner_stats("modelcontextprotocol").unwrap();
+        assert!(stats.is_some());
+        let stats = stats.unwrap();
+        assert!(stats.server_count > 0);
+        assert_eq!(stats.owner, "modelcontextprotocol");
+    }
+
+    #[test]
+    fn test_owner_stats_not_found() {
+        let db = create_test_db();
+        let stats = db.owner_stats("nonexistent-owner-xyz").unwrap();
+        assert!(stats.is_none());
+    }
+
+    #[test]
+    fn test_owner_stats_fields() {
+        let db = create_test_db();
+        let stats = db.owner_stats("modelcontextprotocol").unwrap().unwrap();
+        assert!(stats.total_tools > 0);
+        assert!(!stats.transports.is_empty());
+        assert!(stats.avg_tools_per_server >= 0.0);
+    }
+
+    #[test]
+    fn test_search_by_multiple_tags_single() {
+        let db = create_test_db();
+        // Get a server with tags and use one of them
+        let all = db.list_all().unwrap();
+        let with_tags: Vec<_> = all.iter().filter(|s| !s.tags.is_empty()).collect();
+        if let Some(server) = with_tags.first() {
+            let tag = &server.tags[0];
+            let results = db.search_by_multiple_tags(&[tag]).unwrap();
+            assert!(!results.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_search_by_multiple_tags_empty() {
+        let db = create_test_db();
+        let results = db.search_by_multiple_tags(&["nonexistent-tag-xyz"]).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_list_owners_with_counts() {
+        let db = create_test_db();
+        let owners = db.list_owners_with_counts().unwrap();
+        assert!(!owners.is_empty());
+        // Counts should be > 0
+        for (_, count) in &owners {
+            assert!(*count > 0);
+        }
+    }
+
+    #[test]
+    fn test_total_count() {
+        let db = create_test_db();
+        let count = db.total_count().unwrap();
+        assert!(count > 0);
+    }
+
+    #[test]
+    fn test_owner_stats_serializes() {
+        let stats = OwnerStats {
+            owner: "test".into(),
+            server_count: 3,
+            total_downloads: 100,
+            total_stars: 10,
+            total_tools: 15,
+            transports: vec!["stdio".into()],
+            avg_tools_per_server: 5.0,
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        assert!(json.contains("\"server_count\":3"));
+    }
+}
