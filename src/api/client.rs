@@ -12,6 +12,11 @@ const MAX_RETRIES: u32 = 2;
 /// Base delay between retries (doubles each attempt).
 const RETRY_BASE_MS: u64 = 500;
 
+/// User-Agent header sent with all requests.
+fn user_agent() -> String {
+    format!("mcpreg/{}", env!("CARGO_PKG_VERSION"))
+}
+
 pub struct RegistryClient {
     base_url: String,
     api_key: Option<String>,
@@ -21,9 +26,15 @@ pub struct RegistryClient {
 
 impl RegistryClient {
     pub fn new(config: &Config) -> Self {
+        let timeout = if config.timeout_secs > 0 {
+            config.timeout_secs
+        } else {
+            DEFAULT_TIMEOUT_SECS
+        };
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(timeout))
             .connect_timeout(Duration::from_secs(10))
+            .user_agent(user_agent())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -31,7 +42,7 @@ impl RegistryClient {
             base_url: config.registry_url.trim_end_matches('/').to_string(),
             api_key: config.api_key.clone(),
             client,
-            max_retries: MAX_RETRIES,
+            max_retries: if config.max_retries > 0 { config.max_retries } else { MAX_RETRIES },
         }
     }
 
@@ -40,6 +51,7 @@ impl RegistryClient {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .connect_timeout(Duration::from_secs(10))
+            .user_agent(user_agent())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -228,6 +240,22 @@ mod tests {
         assert_eq!(client.base_url, "https://registry.mcpreg.dev");
         assert!(client.api_key.is_none());
         assert_eq!(client.max_retries, MAX_RETRIES);
+    }
+
+    #[test]
+    fn test_user_agent_contains_version() {
+        let ua = user_agent();
+        assert!(ua.starts_with("mcpreg/"));
+        assert!(ua.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn test_client_custom_timeout_retries() {
+        let mut config = Config::default();
+        config.timeout_secs = 60;
+        config.max_retries = 5;
+        let client = RegistryClient::new(&config);
+        assert_eq!(client.max_retries, 5);
     }
 
     #[test]

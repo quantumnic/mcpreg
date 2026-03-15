@@ -1,4 +1,6 @@
 pub mod alias;
+pub mod batch_install;
+pub mod tree;
 pub mod cache;
 pub mod audit;
 pub mod backup;

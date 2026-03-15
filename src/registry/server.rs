@@ -33,6 +33,7 @@ pub async fn run_server(bind_addr: &str, db_path: &str) -> crate::error::Result<
 pub fn build_router(db_state: DbState) -> Router {
     Router::new()
         .route("/health", axum::routing::get(routes::health))
+        .route("/health/ready", axum::routing::get(routes::health_ready))
         .route("/api/v1/version", axum::routing::get(routes::version))
         .route("/api/v1/search", axum::routing::get(routes::search))
         .route(
@@ -526,6 +527,49 @@ mod new_endpoint_tests {
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let paginated: crate::api::types::PaginatedResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(paginated.per_page, 100);
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn test_health_ready_with_data() {
+        let db = Database::open_in_memory().unwrap();
+        db.seed_default_servers().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        let app = build_router(db_state);
+
+        let req = Request::builder()
+            .uri("/health/ready")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 10_000).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ready");
+        assert!(json["servers"].as_i64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_health_ready_empty_db() {
+        let db = Database::open_in_memory().unwrap();
+        let db_state: DbState = Arc::new(Mutex::new(db));
+        let app = build_router(db_state);
+
+        let req = Request::builder()
+            .uri("/health/ready")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Empty DB should return 500 (not ready)
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
 

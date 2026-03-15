@@ -22,6 +22,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     no_color: bool,
 
+    /// Suppress non-essential output (only show results)
+    #[arg(long, global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -596,6 +600,28 @@ enum Commands {
     #[command(subcommand)]
     Snapshot(SnapshotCommands),
 
+    /// Install multiple MCP servers at once
+    BatchInstall {
+        /// Server references (owner/name) to install
+        #[arg(required = true)]
+        servers: Vec<String>,
+        /// Show what would be installed without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Show a visual tree of server relationships (shared tools, resources)
+    Tree {
+        /// Server reference (owner/name) as root, or omit for full tree
+        server: Option<String>,
+        /// Maximum depth to traverse (default: 3)
+        #[arg(short, long, default_value = "3")]
+        depth: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Show top servers ranked by various criteria (tools, resources, downloads, etc.)
     Top {
         /// Ranking criterion: tools, resources, prompts, downloads, newest, category
@@ -760,6 +786,11 @@ async fn main() {
     // Apply --no-color flag via the NO_COLOR env var convention
     if cli.no_color {
         std::env::set_var("NO_COLOR", "1");
+    }
+
+    // Apply --quiet flag via env var so subcommands can check it
+    if cli.quiet {
+        std::env::set_var("MCPREG_QUIET", "1");
     }
 
     let config = config::Config::load().unwrap_or_default();
@@ -935,6 +966,8 @@ async fn main() {
             SnapshotCommands::Save { output } => commands::snapshot::run_save(output.as_deref()),
             SnapshotCommands::Restore { file, dry_run } => commands::snapshot::run_restore(&file, dry_run),
         },
+        Commands::BatchInstall { servers, dry_run } => commands::batch_install::run(&servers, dry_run).await,
+        Commands::Tree { server, depth, json } => commands::tree::run(server.as_deref(), depth, json),
         Commands::Top { by, limit, json } => commands::top::run(&by, limit, json),
     };
 
@@ -942,6 +975,12 @@ async fn main() {
         eprintln!("Error: {e}");
         std::process::exit(1);
     }
+}
+
+/// Check if quiet mode is active (--quiet flag or MCPREG_QUIET env var).
+#[allow(dead_code)]
+pub fn is_quiet() -> bool {
+    std::env::var("MCPREG_QUIET").is_ok()
 }
 
 /// Compare two semver version strings. Returns Ordering.
@@ -1016,5 +1055,45 @@ mod tests {
     #[test]
     fn test_compare_versions_zero_padded() {
         assert_eq!(compare_versions("01.02.03", "1.2.3"), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn test_compare_versions_single_digit() {
+        assert_eq!(compare_versions("1", "0"), std::cmp::Ordering::Greater);
+        assert_eq!(compare_versions("0", "0"), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn test_compare_versions_large_numbers() {
+        assert_eq!(compare_versions("100.200.300", "100.200.299"), std::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn test_cli_quiet_flag_accepted() {
+        use clap::CommandFactory;
+        // Ensure --quiet is recognized globally
+        let cmd = Cli::command();
+        let matches = cmd.try_get_matches_from(["mcpreg", "--quiet", "tags", "--json"]);
+        assert!(matches.is_ok(), "Failed to parse --quiet flag");
+    }
+
+    #[test]
+    fn test_cli_batch_install_command() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let matches = cmd.try_get_matches_from([
+            "mcpreg", "batch-install", "alice/foo", "bob/bar", "--dry-run",
+        ]);
+        assert!(matches.is_ok(), "Failed to parse batch-install");
+    }
+
+    #[test]
+    fn test_cli_tree_command() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let matches = cmd.try_get_matches_from([
+            "mcpreg", "tree", "--depth", "5", "--json",
+        ]);
+        assert!(matches.is_ok(), "Failed to parse tree command");
     }
 }

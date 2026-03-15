@@ -9,6 +9,20 @@ pub struct Config {
     pub registry_url: String,
     pub api_key: Option<String>,
     pub install_dir: Option<String>,
+    /// HTTP request timeout in seconds (default: 30)
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u64,
+    /// Maximum retry attempts for transient failures (default: 2)
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+}
+
+fn default_timeout() -> u64 {
+    30
+}
+
+fn default_max_retries() -> u32 {
+    2
 }
 
 impl Default for Config {
@@ -17,6 +31,8 @@ impl Default for Config {
             registry_url: DEFAULT_REGISTRY.to_string(),
             api_key: None,
             install_dir: None,
+            timeout_secs: default_timeout(),
+            max_retries: default_max_retries(),
         }
     }
 }
@@ -53,6 +69,16 @@ impl Config {
         }
         if let Ok(dir) = std::env::var("MCPREG_INSTALL_DIR") {
             config.install_dir = Some(dir);
+        }
+        if let Ok(t) = std::env::var("MCPREG_TIMEOUT") {
+            if let Ok(secs) = t.parse::<u64>() {
+                config.timeout_secs = secs;
+            }
+        }
+        if let Ok(r) = std::env::var("MCPREG_MAX_RETRIES") {
+            if let Ok(n) = r.parse::<u32>() {
+                config.max_retries = n;
+            }
         }
 
         Ok(config)
@@ -107,12 +133,28 @@ mod tests {
             registry_url: "http://localhost:3000".into(),
             api_key: Some("test-key".into()),
             install_dir: Some("/opt/mcp".into()),
+            timeout_secs: 60,
+            max_retries: 5,
         };
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.registry_url, "http://localhost:3000");
         assert_eq!(deserialized.api_key.unwrap(), "test-key");
         assert_eq!(deserialized.install_dir.unwrap(), "/opt/mcp");
+        assert_eq!(deserialized.timeout_secs, 60);
+        assert_eq!(deserialized.max_retries, 5);
+    }
+
+    #[test]
+    fn test_config_toml_missing_new_fields_uses_defaults() {
+        // Simulate an old config.toml without timeout/retry fields
+        let toml_str = r#"
+registry_url = "https://custom.dev"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.registry_url, "https://custom.dev");
+        assert_eq!(config.timeout_secs, 30);
+        assert_eq!(config.max_retries, 2);
     }
 
     #[test]
@@ -145,6 +187,8 @@ mod additional_tests {
         assert_eq!(config.registry_url, "https://registry.mcpreg.dev");
         assert!(config.api_key.is_none());
         assert!(config.install_dir.is_none());
+        assert_eq!(config.timeout_secs, 30);
+        assert_eq!(config.max_retries, 2);
     }
 
     #[test]

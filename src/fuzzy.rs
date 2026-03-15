@@ -998,6 +998,122 @@ pub fn suggest_typo_tolerant(query: &str, candidates: &[String], max_results: us
     scored
 }
 
+/// Extract character trigrams from a string (case-insensitive).
+/// Returns a set of 3-character windows padded with spaces at boundaries.
+#[allow(dead_code)]
+pub fn trigrams(s: &str) -> Vec<String> {
+    let s = format!("  {}  ", s.to_lowercase());
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() < 3 {
+        return vec![s];
+    }
+    chars.windows(3).map(|w| w.iter().collect()).collect()
+}
+
+/// Compute trigram similarity between two strings.
+/// Returns a value between 0.0 (no overlap) and 1.0 (identical trigram sets).
+#[allow(dead_code)]
+pub fn trigram_similarity(a: &str, b: &str) -> f64 {
+    let tg_a = trigrams(a);
+    let tg_b = trigrams(b);
+    if tg_a.is_empty() && tg_b.is_empty() {
+        return 1.0;
+    }
+    if tg_a.is_empty() || tg_b.is_empty() {
+        return 0.0;
+    }
+    let matches = tg_a.iter().filter(|t| tg_b.contains(t)).count();
+    let total = tg_a.len().max(tg_b.len());
+    matches as f64 / total as f64
+}
+
+/// Combined fuzzy score: weighted blend of Jaro-Winkler, trigram, and subsequence.
+/// Returns 0.0 – 1.0 (higher is more similar).
+#[allow(dead_code)]
+pub fn combined_fuzzy_score(query: &str, candidate: &str) -> f64 {
+    let jw = jaro_winkler(query, candidate);
+    let tg = trigram_similarity(query, candidate);
+    let subseq_bonus = if is_subsequence(query, candidate) { 0.15 } else { 0.0 };
+
+    // Weighted blend
+    (jw * 0.45 + tg * 0.40 + subseq_bonus).min(1.0)
+}
+
+#[cfg(test)]
+mod trigram_tests {
+    use super::*;
+
+    #[test]
+    fn test_trigrams_basic() {
+        let tgs = trigrams("abc");
+        assert!(tgs.contains(&"  a".to_string()));
+        assert!(tgs.contains(&" ab".to_string()));
+        assert!(tgs.contains(&"abc".to_string()));
+        assert!(tgs.contains(&"bc ".to_string()));
+        assert!(tgs.contains(&"c  ".to_string()));
+    }
+
+    #[test]
+    fn test_trigrams_case_insensitive() {
+        let a = trigrams("Hello");
+        let b = trigrams("hello");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_trigrams_empty() {
+        let tgs = trigrams("");
+        // Should produce trigrams from the padded spaces
+        assert!(!tgs.is_empty());
+    }
+
+    #[test]
+    fn test_trigram_similarity_identical() {
+        let sim = trigram_similarity("hello", "hello");
+        assert!((sim - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_trigram_similarity_different() {
+        let sim = trigram_similarity("abc", "xyz");
+        // Very different strings should have low similarity (only space-padded overlaps)
+        assert!(sim < 0.5);
+    }
+
+    #[test]
+    fn test_trigram_similarity_similar() {
+        let sim = trigram_similarity("filesystem", "filesystm");
+        assert!(sim > 0.7);
+    }
+
+    #[test]
+    fn test_combined_fuzzy_score_exact() {
+        let score = combined_fuzzy_score("hello", "hello");
+        assert!(score > 0.9);
+    }
+
+    #[test]
+    fn test_combined_fuzzy_score_typo() {
+        let score = combined_fuzzy_score("filesystme", "filesystem");
+        assert!(score > 0.5, "Score was {score}");
+    }
+
+    #[test]
+    fn test_combined_fuzzy_score_unrelated() {
+        let score = combined_fuzzy_score("abc", "xyz");
+        assert!(score < 0.4);
+    }
+
+    #[test]
+    fn test_combined_fuzzy_score_subsequence_bonus() {
+        // "fs" is a subsequence of "filesystem"
+        let with_subseq = combined_fuzzy_score("fs", "filesystem");
+        // "zx" is NOT a subsequence of "filesystem"
+        let without_subseq = combined_fuzzy_score("zx", "filesystem");
+        assert!(with_subseq > without_subseq);
+    }
+}
+
 #[cfg(test)]
 mod damerau_tests {
     use super::*;

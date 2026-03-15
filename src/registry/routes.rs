@@ -287,6 +287,22 @@ pub async fn health(
     }))
 }
 
+/// GET /health/ready — readiness probe (checks DB is accessible and non-empty)
+pub async fn health_ready(
+    State(db): State<DbState>,
+) -> Result<Json<serde_json::Value>, McpRegError> {
+    let db = db.lock().await;
+    let count = db.count_servers()?;
+    if count == 0 {
+        return Err(McpRegError::Registry("Registry has no servers — not ready".into()));
+    }
+    Ok(Json(serde_json::json!({
+        "status": "ready",
+        "servers": count,
+        "version": env!("CARGO_PKG_VERSION"),
+    })))
+}
+
 /// GET /api/v1/version — server version info
 pub async fn version() -> Json<serde_json::Value> {
     Json(serde_json::json!({
