@@ -206,23 +206,16 @@ pub async fn publish(
     State(db): State<DbState>,
     Json(entry): Json<ServerEntry>,
 ) -> Result<Json<PublishResponse>, McpRegError> {
+    use crate::registry::validation;
+
     // Validate required fields
-    if entry.owner.is_empty() || entry.name.is_empty() {
-        return Err(McpRegError::Validation("owner and name are required".into()));
-    }
     if entry.command.is_empty() {
         return Err(McpRegError::Validation("command is required".into()));
     }
-    if entry.version.is_empty() {
-        return Err(McpRegError::Validation("version is required".into()));
-    }
-    // Basic semver check
-    let parts: Vec<&str> = entry.version.split('.').collect();
-    if parts.len() < 2 || parts.iter().any(|p| p.parse::<u64>().is_err()) {
-        return Err(McpRegError::Validation(
-            "version must be in semver format (e.g. 1.0.0)".into(),
-        ));
-    }
+    // Identifiers must be safe for URLs, refs, and config keys
+    validation::validate_server_ref(&entry.owner, &entry.name)?;
+    // Strict semver check
+    validation::validate_version(&entry.version)?;
     // Validate transport
     let valid_transports = ["stdio", "sse", "streamable-http"];
     if !entry.transport.is_empty() && !valid_transports.contains(&entry.transport.as_str()) {
@@ -764,26 +757,26 @@ mod tests {
 pub async fn validate_entry(
     Json(entry): Json<ServerEntry>,
 ) -> Result<Json<serde_json::Value>, McpRegError> {
+    use crate::registry::validation;
+
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
     // Required fields
-    if entry.owner.is_empty() {
-        errors.push("owner is required".into());
+    if let Some(issue) =
+        validation::identifier_issue("owner", &entry.owner, validation::MAX_OWNER_LEN)
+    {
+        errors.push(issue);
     }
-    if entry.name.is_empty() {
-        errors.push("name is required".into());
+    if let Some(issue) = validation::identifier_issue("name", &entry.name, validation::MAX_NAME_LEN)
+    {
+        errors.push(issue);
     }
     if entry.command.is_empty() {
         errors.push("command is required".into());
     }
-    if entry.version.is_empty() {
-        errors.push("version is required".into());
-    } else {
-        let parts: Vec<&str> = entry.version.split('.').collect();
-        if parts.len() < 2 || parts.iter().any(|p| p.parse::<u64>().is_err()) {
-            errors.push("version must be in semver format (e.g. 1.0.0)".into());
-        }
+    if let Some(issue) = validation::version_issue(&entry.version) {
+        errors.push(issue);
     }
 
     // Transport validation
@@ -811,16 +804,6 @@ pub async fn validate_entry(
     }
     if entry.author.is_empty() {
         warnings.push("author is empty".into());
-    }
-
-    // Name format check
-    if !entry.name.is_empty()
-        && !entry
-            .name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        warnings.push("name contains non-standard characters — use lowercase alphanumeric, hyphens, or underscores".into());
     }
 
     // Env var hints validation
@@ -1004,11 +987,7 @@ pub async fn patch_server(
         changed.push("description");
     }
     if let Some(version) = patch.get("version").and_then(|v| v.as_str()) {
-        // Validate semver
-        let parts: Vec<&str> = version.split('.').collect();
-        if parts.len() < 2 || parts.iter().any(|p| p.parse::<u64>().is_err()) {
-            return Err(McpRegError::Validation("version must be in semver format".into()));
-        }
+        crate::registry::validation::validate_version(version)?;
         entry.version = version.to_string();
         changed.push("version");
     }

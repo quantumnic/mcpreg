@@ -72,19 +72,16 @@ pub fn validate_manifest_content(content: &str) -> Vec<String> {
     };
 
     // Required fields
-    if manifest.package.name.is_empty() {
-        issues.push("package.name is required".into());
-    } else if manifest.package.name.contains(' ') {
-        issues.push("package.name should not contain spaces".into());
+    if let Some(issue) = crate::registry::validation::identifier_issue(
+        "package.name",
+        &manifest.package.name,
+        crate::registry::validation::MAX_NAME_LEN,
+    ) {
+        issues.push(issue);
     }
 
-    if manifest.package.version.is_empty() {
-        issues.push("package.version is required".into());
-    } else {
-        let parts: Vec<&str> = manifest.package.version.split('.').collect();
-        if parts.len() != 3 || parts.iter().any(|p| p.parse::<u32>().is_err()) {
-            issues.push("package.version must be in semver format (e.g. 1.0.0)".into());
-        }
+    if let Some(issue) = crate::registry::validation::version_issue(&manifest.package.version) {
+        issues.push(format!("package.{issue}"));
     }
 
     if manifest.server.command.is_empty() {
@@ -196,6 +193,51 @@ license = "MIT"
 command = "node"
 "#;
         let issues = validate_manifest_content(content);
-        assert!(issues.iter().any(|i| i.contains("spaces")));
+        assert!(
+            issues.iter().any(|i| i.contains("invalid character")),
+            "spaces in package.name should be flagged as invalid characters: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_name_with_path_traversal() {
+        let content = r#"
+[package]
+name = "../etc/passwd"
+version = "1.0.0"
+description = "test"
+author = "dev"
+license = "MIT"
+
+[server]
+command = "node"
+"#;
+        let issues = validate_manifest_content(content);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("package.name contains invalid character")),
+            "path traversal in package.name should be rejected: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_version_leading_zeros() {
+        let content = r#"
+[package]
+name = "test"
+version = "01.2.3"
+description = "test"
+author = "dev"
+license = "MIT"
+
+[server]
+command = "node"
+"#;
+        let issues = validate_manifest_content(content);
+        assert!(
+            issues.iter().any(|i| i.contains("leading zeros")),
+            "leading-zero version should be rejected: {issues:?}"
+        );
     }
 }

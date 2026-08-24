@@ -386,6 +386,218 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
+
+    #[tokio::test]
+    async fn test_api_publish_rejects_bad_owner() {
+        for bad_owner in ["../etc", "al ice", "a/b", "-lead", "trail_", "café"] {
+            let app = test_app().await;
+            let entry = ServerEntry {
+                id: None,
+                owner: bad_owner.into(),
+                name: "ok-name".into(),
+                version: "0.1.0".into(),
+                description: String::new(),
+                author: String::new(),
+                license: String::new(),
+                repository: String::new(),
+                command: "node".into(),
+                args: vec![],
+                transport: "stdio".into(),
+                tools: vec![],
+                resources: vec![],
+                prompts: vec![],
+                tags: vec![],
+                env: Default::default(),
+                homepage: String::new(),
+                deprecated: false,
+                deprecated_by: None,
+                downloads: 0,
+                stars: 0,
+                created_at: None,
+                updated_at: None,
+            };
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/publish")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&entry).unwrap()))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "owner '{bad_owner}' should be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_publish_rejects_bad_name() {
+        for bad_name in ["foo bar", "a/b", "..", "x\ny"] {
+            let app = test_app().await;
+            let entry = ServerEntry {
+                id: None,
+                owner: "okowner".into(),
+                name: bad_name.into(),
+                version: "0.1.0".into(),
+                description: String::new(),
+                author: String::new(),
+                license: String::new(),
+                repository: String::new(),
+                command: "node".into(),
+                args: vec![],
+                transport: "stdio".into(),
+                tools: vec![],
+                resources: vec![],
+                prompts: vec![],
+                tags: vec![],
+                env: Default::default(),
+                homepage: String::new(),
+                deprecated: false,
+                deprecated_by: None,
+                downloads: 0,
+                stars: 0,
+                created_at: None,
+                updated_at: None,
+            };
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/publish")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&entry).unwrap()))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "name '{bad_name}' should be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_publish_rejects_loose_versions() {
+        for bad_version in ["1", "1.0", "1.0.0.0", "abc", ""] {
+            let app = test_app().await;
+            let entry = ServerEntry {
+                id: None,
+                owner: "okowner".into(),
+                name: "okname".into(),
+                version: bad_version.into(),
+                description: String::new(),
+                author: String::new(),
+                license: String::new(),
+                repository: String::new(),
+                command: "node".into(),
+                args: vec![],
+                transport: "stdio".into(),
+                tools: vec![],
+                resources: vec![],
+                prompts: vec![],
+                tags: vec![],
+                env: Default::default(),
+                homepage: String::new(),
+                deprecated: false,
+                deprecated_by: None,
+                downloads: 0,
+                stars: 0,
+                created_at: None,
+                updated_at: None,
+            };
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/publish")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&entry).unwrap()))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "version '{bad_version}' should be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_api_validate_reports_identifier_issues() {
+        let app = test_app().await;
+        let entry = ServerEntry {
+            id: None,
+            owner: "../bad".into(),
+            name: "has space".into(),
+            version: "not-semver".into(),
+            description: String::new(),
+            author: String::new(),
+            license: String::new(),
+            repository: String::new(),
+            command: "node".into(),
+            args: vec![],
+            transport: "stdio".into(),
+            tools: vec![],
+            resources: vec![],
+            prompts: vec![],
+            tags: vec![],
+            env: Default::default(),
+            homepage: String::new(),
+            deprecated: false,
+            deprecated_by: None,
+            downloads: 0,
+            stars: 0,
+            created_at: None,
+            updated_at: None,
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/validate")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&entry).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["valid"].as_bool(), Some(false));
+        let errors = v["errors"].as_array().unwrap();
+        assert!(errors.len() >= 3, "expected >=3 errors, got: {errors:?}");
+        let body_str = serde_json::to_string(&v).unwrap();
+        assert!(body_str.contains("owner"));
+        assert!(body_str.contains("name"));
+        assert!(body_str.contains("semver"));
+    }
+
+    #[tokio::test]
+    async fn test_api_patch_rejects_bad_version() {
+        let app = test_app().await;
+        // First publish a valid entry
+        let entry = serde_json::json!({
+            "owner": "patchuser",
+            "name": "patchserver",
+            "version": "1.0.0",
+            "command": "node"
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/publish")
+            .header("content-type", "application/json")
+            .body(Body::from(entry.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Now try patching with an invalid version
+        let patch = serde_json::json!({"version": "not-a-version"});
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/api/v1/servers/patchuser/patchserver")
+            .header("content-type", "application/json")
+            .body(Body::from(patch.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
 }
 
 #[cfg(test)]

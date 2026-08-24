@@ -52,8 +52,20 @@ pub async fn run(manifest_path: Option<&str>) -> Result<()> {
 }
 
 fn validate_manifest(manifest: &McpManifest) -> Result<()> {
-    if manifest.package.name.is_empty() {
-        return Err(McpRegError::Manifest("Package name is required".into()));
+    use crate::registry::validation;
+    if let Some(issue) =
+        validation::identifier_issue("name", &manifest.package.name, validation::MAX_NAME_LEN)
+    {
+        return Err(McpRegError::Manifest(issue));
+    }
+    if let Some(issue) = validation::identifier_issue(
+        "author",
+        &manifest.package.author,
+        validation::MAX_OWNER_LEN,
+    ) {
+        return Err(McpRegError::Manifest(format!(
+            "{issue} (author is used as the registry owner)"
+        )));
     }
     if manifest.package.version.is_empty() {
         return Err(McpRegError::Manifest("Package version is required".into()));
@@ -61,13 +73,8 @@ fn validate_manifest(manifest: &McpManifest) -> Result<()> {
     if manifest.server.command.is_empty() {
         return Err(McpRegError::Manifest("Server command is required".into()));
     }
-    // Validate version format (basic semver check)
-    let parts: Vec<&str> = manifest.package.version.split('.').collect();
-    if parts.len() != 3 || parts.iter().any(|p| p.parse::<u32>().is_err()) {
-        return Err(McpRegError::Manifest(
-            "Version must be in semver format (e.g. 1.0.0)".into(),
-        ));
-    }
+    validation::validate_version(&manifest.package.version)
+        .map_err(|e| McpRegError::Manifest(format!("Invalid package.version: {e}")))?;
     Ok(())
 }
 
@@ -120,5 +127,36 @@ mod tests {
         let mut m = valid_manifest();
         m.server.command = String::new();
         assert!(validate_manifest(&m).is_err());
+    }
+
+    #[test]
+    fn test_validate_rejects_bad_name_characters() {
+        for bad_name in ["has space", "../traversal", "a/b", "café", "-leading"] {
+            let mut m = valid_manifest();
+            m.package.name = bad_name.into();
+            assert!(
+                validate_manifest(&m).is_err(),
+                "name '{bad_name}' should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_bad_author() {
+        let mut m = valid_manifest();
+        m.package.author = "bad author!".into();
+        assert!(validate_manifest(&m).is_err());
+    }
+
+    #[test]
+    fn test_validate_rejects_loose_version() {
+        for bad in ["1", "1.0", "1.0.0.0"] {
+            let mut m = valid_manifest();
+            m.package.version = bad.into();
+            assert!(
+                validate_manifest(&m).is_err(),
+                "version '{bad}' should be rejected"
+            );
+        }
     }
 }
