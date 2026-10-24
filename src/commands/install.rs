@@ -17,7 +17,19 @@ pub async fn run(server_ref: &str) -> Result<()> {
     let client = RegistryClient::new(&config);
 
     println!("Fetching {owner}/{name} from registry...");
-    let entry = client.get_server(owner, name).await?;
+    let entry = match client.get_server(owner, name).await {
+        Ok(e) => e,
+        Err(remote_err) => match crate::commands::info::fetch_local(owner, name) {
+            Ok(e) => {
+                eprintln!(
+                    "⚠  Registry {} unreachable ({remote_err}); using local catalog entry.",
+                    config.registry_url
+                );
+                e
+            }
+            Err(_) => return Err(remote_err),
+        },
+    };
 
     // Update installed servers list
     let installed_path = Config::installed_servers_path()?;

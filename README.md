@@ -36,6 +36,11 @@ cargo install mcpreg
 
 ## Quick Start
 
+> **Note:** the public hosted registry (`registry.mcpreg.dev`) is not online yet. Until it is,
+> `search`, `info` and `install` automatically fall back to the built-in local catalog
+> (40+ well-known MCP servers, stored in `~/.mcpreg/registry.db`). To publish, run your own
+> registry with `mcpreg serve` (see [Self-Hosting](#self-hosting)) and point `registry_url` at it.
+
 ### Search for MCP servers
 
 ```bash

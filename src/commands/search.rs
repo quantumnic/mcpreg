@@ -65,8 +65,28 @@ pub async fn run(
     } else {
         let config = Config::load()?;
         let client = RegistryClient::new(&config);
-        let response = client.search(query).await?;
-        response.servers
+        match client.search(query).await {
+            Ok(response) => response.servers,
+            Err(e) => {
+                // Remote registry unreachable: fall back to the built-in local catalog.
+                if !json_output {
+                    eprintln!(
+                        "⚠  Registry {} unreachable ({e}); searching local catalog instead.",
+                        config.registry_url
+                    );
+                }
+                let db_path = Config::db_path()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "registry.db".to_string());
+                let db = Database::open(&db_path)?;
+                let _ = db.seed_default_servers();
+                if query.contains('|') {
+                    db.search_any(query)?
+                } else {
+                    db.search(query)?
+                }
+            }
+        }
     };
 
     // Client-side category filter

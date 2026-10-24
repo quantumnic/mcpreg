@@ -8,6 +8,12 @@ pub struct Database {
 
 impl Database {
     pub fn open(path: &str) -> Result<Self> {
+        // Make sure the parent directory (e.g. ~/.mcpreg) exists on first run.
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
         let conn = Connection::open(path)?;
         let db = Self { conn };
         db.init_tables()?;

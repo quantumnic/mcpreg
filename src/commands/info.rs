@@ -131,7 +131,7 @@ async fn fetch_remote(owner: &str, name: &str) -> Result<ServerEntry> {
     client.get_server(owner, name).await
 }
 
-fn fetch_local(owner: &str, name: &str) -> Result<ServerEntry> {
+pub(crate) fn fetch_local(owner: &str, name: &str) -> Result<ServerEntry> {
     let db_path = Config::db_path()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "registry.db".to_string());
